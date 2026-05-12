@@ -28,23 +28,33 @@ syncLayersToState();
 
 /* node:coverage disable */
 let mapHandle = null;
+let installedFrames = null;
+let autoSeekDone = false;
+
 mountMap(document.getElementById('map'), {
   view: DEFAULT_VIEW,
   host: 'https://tilecache.rainviewer.com',
 }).then((handle) => {
   mapHandle = handle;
-  applyLayerToMap(layers.get(RADAR_LAYER_ID));
+  syncMapWithState();
 });
 /* node:coverage enable */
 
 addAsync('radarHistory', async () => {
   const manifest = await fetchManifest();
   const frames = manifest.past.slice(-HISTORY_FRAME_COUNT);
-  if (mapHandle) {
-    mapHandle.setHistory(frames);
-    setValue('playheadIdx', frames.length - 1);
-  }
   return { host: manifest.host, frames, decoded: await loadHistory(manifest, HISTORY_FRAME_COUNT) };
+});
+
+const refetchFlow = addAsync('flowField', async () => {
+  const decoded = appState.radarHistory?.data?.decoded;
+  if (!decoded || decoded.length < 2) return null;
+  // Yield once before crunching ~200ms of SSDs so the UI thread can
+  // render the "computing" state.
+  await Promise.resolve();
+  const t0 = performance.now();
+  const field = flowFromHistory(decoded);
+  return field ? { ...field, computeMs: performance.now() - t0 } : null;
 });
 
 setValue('playheadIdx', 0);
@@ -62,25 +72,6 @@ computed('currentFrameTime', ['radarHistory.data', 'playheadIdx'], (s) => {
   return formatFrameTime(frames[idx].time);
 });
 
-const refetchFlow = addAsync('flowField', async () => {
-  const decoded = appState.radarHistory?.data?.decoded;
-  if (!decoded || decoded.length < 2) return null;
-  // Yield once before crunching ~200ms of SSDs so the UI thread can
-  // render the "computing" state.
-  await Promise.resolve();
-  const t0 = performance.now();
-  const field = flowFromHistory(decoded);
-  return field ? { ...field, computeMs: performance.now() - t0 } : null;
-});
-
-watch(['radarHistory.data'], () => {
-  if (appState.radarHistory?.data?.decoded?.length >= 2) {
-    /* node:coverage disable */
-    refetchFlow.run?.();
-    /* node:coverage enable */
-  }
-});
-
 computed('flowStatus', ['flowField'], (s) => {
   const f = s.flowField;
   if (!f) return 'idle';
@@ -90,19 +81,35 @@ computed('flowStatus', ['flowField'], (s) => {
   return 'idle';
 });
 
-watch(['radarHistory.data', 'playheadIdx'], () => {
+// When radar data arrives, auto-seek to the latest frame (once) and
+// re-run flow on the freshly decoded grids.
+watch(['radarHistory.data'], () => {
+  const frames = appState.radarHistory?.data?.frames;
+  if (!frames || frames.length === 0) return;
+  if (!autoSeekDone) {
+    setValue('playheadIdx', frames.length - 1);
+    autoSeekDone = true;
+  }
+  /* node:coverage disable */
+  if (appState.radarHistory?.data?.decoded?.length >= 2) refetchFlow();
+  /* node:coverage enable */
+  syncMapWithState();
+});
+
+watch(['playheadIdx'], () => {
+  /* node:coverage disable */
   if (!mapHandle) return;
   const frames = appState.radarHistory?.data?.frames;
   if (!frames || frames.length === 0) return;
   mapHandle.showFrame(clampIdx(appState.playheadIdx, frames.length));
+  /* node:coverage enable */
 });
 
 watch(['layers'], () => {
+  /* node:coverage disable */
   if (!mapHandle) return;
-  const radar = appState.layers?.find((l) => l.id === RADAR_LAYER_ID);
-  if (radar) applyLayerToMap(radar);
-  const vectors = appState.layers?.find((l) => l.id === VECTORS_LAYER_ID);
-  if (vectors) applyLayerToMap(vectors);
+  for (const layer of appState.layers ?? []) applyLayerToMap(layer);
+  /* node:coverage enable */
 });
 
 watch(['flowField.data', 'playheadIdx', 'vectorColorMode'], () => {
@@ -183,6 +190,26 @@ function applyState(snapshot) {
 }
 
 /* node:coverage disable */
+/**
+ * Idempotently push current appState into the map handle: install the
+ * radar history if frames are new, swap to the current playhead frame,
+ * and apply each layer's visibility/opacity. Called both when the map
+ * finishes mounting and when radarHistory.data settles — whichever wins
+ * the race.
+ */
+function syncMapWithState() {
+  if (!mapHandle) return;
+  const frames = appState.radarHistory?.data?.frames;
+  if (frames && frames !== installedFrames) {
+    mapHandle.setHistory(frames);
+    installedFrames = frames;
+  }
+  if (frames && frames.length > 0) {
+    mapHandle.showFrame(clampIdx(appState.playheadIdx, frames.length));
+  }
+  for (const layer of layers.list()) applyLayerToMap(layer);
+}
+
 function applyLayerToMap(layer) {
   if (!mapHandle || !layer) return;
   if (layer.id === RADAR_LAYER_ID) {
