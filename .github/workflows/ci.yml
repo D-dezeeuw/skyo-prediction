@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test & coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Run tests
+        run: npm test
+
+      - name: Enforce coverage gate (>=85%)
+        run: npm run check:coverage
+        env:
+          COVERAGE_THRESHOLD: '85'
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify dist output
+        run: |
+          test -f dist/index.html || (echo "dist/index.html missing"; exit 1)
+          test -f dist/app.js || (echo "dist/app.js missing"; exit 1)
+          test -f dist/styles.css || (echo "dist/styles.css missing"; exit 1)
+          grep -q 'src="\./app.js"' dist/index.html || (echo "dist/index.html paths not relativized"; exit 1)
+          echo "dist/ verified"

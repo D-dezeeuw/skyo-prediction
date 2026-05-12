@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>skyo-prediction</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "spektrum": "https://unpkg.com/spektrum@0/spektrum.min.js",
+      "spektrum/persist": "https://unpkg.com/spektrum@0/spektrum-persist.js",
+      "spektrum/devtools": "https://unpkg.com/spektrum@0/spektrum-devtools.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <main id="app">
+    <h1>{{title}}</h1>
+    <p class="status" :class="{ready: status === 'Ready'}">{{status}}</p>
+    <p class="hint">Story 1 scaffold. Story 2 wires in RainViewer ingestion.</p>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
