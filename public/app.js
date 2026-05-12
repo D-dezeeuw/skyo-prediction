@@ -11,6 +11,15 @@ const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
 const HISTORY_FRAME_COUNT = 12;
 const TILE_SIZE = 256;
+// Smaller blocks → denser vector field. 8-px blocks on a 256-px tile
+// give a 32×32 grid (1024 arrows) instead of the previous 16×16 (256).
+// Same total SSD work because per-block cost shrinks at the same rate.
+const FLOW_BLOCK_SIZE = 8;
+const FLOW_SEARCH_RADIUS = 8;
+// Hide arrows over rain-free blocks (mm/h). Block-matching on flat zero
+// returns arbitrary zero motion vectors; rendering them as arrows just
+// adds visual noise. 0.05 mm/h ≈ "trace precipitation" in radar lingo.
+const ARROW_INTENSITY_THRESHOLD = 0.05;
 
 const layers = createLayerRegistry([
   { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 0.8 },
@@ -60,7 +69,8 @@ const refetchFlow = addAsync('flowField', async () => {
   if (!decoded || decoded.length < 2) return null;
   await Promise.resolve();
   const t0 = performance.now();
-  const pairs = computeFlowPairs(decoded);
+  const flowOpts = { blockSize: FLOW_BLOCK_SIZE, searchRadius: FLOW_SEARCH_RADIUS };
+  const pairs = computeFlowPairs(decoded, flowOpts);
   const smoothed = smoothFlows(pairs.slice(-DEFAULT_SMOOTHING_WINDOW));
   return { pairs, smoothed, computeMs: performance.now() - t0 };
 });
@@ -202,6 +212,7 @@ watch(['flowField.data', 'playheadIdx', 'vectorColorMode'], () => {
     colorMode: appState.vectorColorMode,
     radarGrid: frame?.grid ?? null,
     radarWidth: frame?.width ?? 0,
+    intensityThreshold: ARROW_INTENSITY_THRESHOLD,
   });
   mapHandle.setVectors(arrows);
   /* node:coverage enable */
@@ -236,15 +247,19 @@ defineFn('seekPlayhead', (el) => {
 
 // data-each rows carry the layer id via `:data-layer-id="item.id"` so
 // we can identify which row was toggled without ambient context.
+// Identifying the row's layer via `:name="item.id"` because Spektrum's
+// `:attr` binding sets el[prop] (good for `name`, `value`, `checked`)
+// but does NOT call setAttribute — so `:data-layer-id` would not
+// populate el.dataset.layerId.
 defineFn('toggleLayer', (el) => {
-  const id = el.dataset.layerId;
+  const id = el.name;
   if (!id || !layers.has(id)) return;
   layers.setVisible(id, !layers.get(id).visible);
   syncLayersToState();
 });
 
 defineFn('setLayerOpacity', (el) => {
-  const id = el.dataset.layerId;
+  const id = el.name;
   if (!id || !layers.has(id)) return;
   const v = Number(el.value);
   layers.setOpacity(id, Number.isFinite(v) ? v / 100 : 0);

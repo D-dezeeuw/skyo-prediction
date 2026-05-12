@@ -213,4 +213,43 @@ describe('buildArrows', () => {
     const arrows = buildArrows(flowField(2, 2, [1, 0]), { colorMode: 'rainbow' });
     for (const a of arrows) assert.match(a.color, /^hsl/);
   });
+
+  test('intensityThreshold skips blocks whose radar sample is below the cutoff', () => {
+    const f = flowField(2, 2, [1, 0]);
+    const tileSize = 256;
+    // Paint only the top-left quadrant with rain (50 mm/h). The other
+    // three blocks should be culled.
+    const radarGrid = new Float32Array(tileSize * tileSize);
+    for (let y = 0; y < 128; y++) {
+      for (let x = 0; x < 128; x++) {
+        radarGrid[y * tileSize + x] = 50;
+      }
+    }
+    const arrows = buildArrows(f, {
+      tileSize,
+      radarGrid,
+      radarWidth: tileSize,
+      intensityThreshold: 0.05,
+    });
+    assert.equal(arrows.length, 1, 'only the rainy block should render');
+    // The kept arrow's centre should be in the top-left (64, 64)
+    assert.match(arrows[0].d, /^M 64 64/);
+  });
+
+  test('intensityThreshold has no effect when radarGrid is missing', () => {
+    const arrows = buildArrows(flowField(2, 2, [1, 0]), { intensityThreshold: 99 });
+    assert.equal(arrows.length, 4, 'gate should be inactive without a grid');
+  });
+
+  test('intensityThreshold of 0 (default) renders every block', () => {
+    const f = flowField(2, 2, [1, 0]);
+    const radarGrid = new Float32Array(256 * 256); // all zero
+    const arrows = buildArrows(f, {
+      tileSize: 256,
+      radarGrid,
+      radarWidth: 256,
+      intensityThreshold: 0,
+    });
+    assert.equal(arrows.length, 4);
+  });
 });
