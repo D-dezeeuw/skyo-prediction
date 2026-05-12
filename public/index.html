@@ -31,12 +31,13 @@
         <ul class="layer-list" data-each="layers" data-as="item">
           <li class="layer-row">
             <label class="layer-toggle">
-              <input type="checkbox" :checked="item.visible" data-fn-change="toggleLayer">
+              <input type="checkbox" :checked="item.visible"
+                     data-action="change" data-fn="toggleLayer">
               <span>{{item.name}}</span>
             </label>
             <input class="layer-opacity" type="range" min="0" max="100" step="1"
                    :value="item.opacity * 100"
-                   data-fn-input="setLayerOpacity"
+                   data-action="input" data-fn="setLayerOpacity"
                    aria-label="Opacity">
           </li>
         </ul>
@@ -47,13 +48,13 @@
           <label>
             <input type="radio" name="vector-color" value="speed"
                    :checked="vectorColorMode === 'speed'"
-                   data-fn-change="setColorMode">
+                   data-action="change" data-fn="setColorMode">
             <span>Speed</span>
           </label>
           <label>
             <input type="radio" name="vector-color" value="intensity"
                    :checked="vectorColorMode === 'intensity'"
-                   data-fn-change="setColorMode">
+                   data-action="change" data-fn="setColorMode">
             <span>Intensity</span>
           </label>
         </fieldset>
@@ -61,16 +62,15 @@
     </div>
 
     <section class="timeline">
-      <button class="play-btn" data-fn-click="togglePlay" aria-label="Play / pause">
-        <span data-if="!playing">▶</span>
-        <span data-if="playing">⏸</span>
-      </button>
+      <button class="play-btn"
+              data-action="click" data-fn="togglePlay"
+              aria-label="Play / pause">{{playIcon}}</button>
       <input type="range" class="scrubber"
              min="0"
              :max="frameCount > 0 ? frameCount - 1 : 0"
              step="1"
              :value="playheadIdx"
-             data-fn-input="seekPlayhead"
+             data-action="input" data-fn="seekPlayhead"
              aria-label="Frame scrubber">
       <span class="frame-meta">
         <span data-if="frameCount">Frame {{playheadIdx}} / {{frameCount - 1}} · <code>{{currentFrameTime}}</code></span>
