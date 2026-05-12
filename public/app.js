@@ -2,7 +2,6 @@ import { addAsync, appState, bindDOM, computed, defineFn, run, setValue, watch }
 import { initialState, readyState } from './state.js';
 import { fetchManifest, loadHistory } from './radar.js';
 import { mountMap, DEFAULT_VIEW } from './map.js';
-import { createLayerRegistry } from './layers.js';
 import { clampIdx, formatFrameTime, nextIdx, FRAME_INTERVAL_MS } from './timeline.js';
 import { computeFlowPairs, smoothFlows, DEFAULT_SMOOTHING_WINDOW } from './flow.js';
 import { buildArrows, COLOR_MODES } from './vectors.js';
@@ -21,14 +20,15 @@ const FLOW_SEARCH_RADIUS = 8;
 // adds visual noise. 0.05 mm/h ≈ "trace precipitation" in radar lingo.
 const ARROW_INTENSITY_THRESHOLD = 0.05;
 
-const layers = createLayerRegistry([
-  { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 0.8 },
-  { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 0.9 },
-]);
-
-function syncLayersToState() {
-  setValue('layers', layers.list());
-}
+// Layers are plain state objects so the template's data-model can write
+// directly to `appState.layers[i].visible` / `.opacity` — no registry
+// indirection, no derived snapshots, no path-rewrite gymnastics.
+// Opacity is stored as an integer 0–100 to match the range slider's
+// native value; we divide by 100 only when applying to the map.
+const INITIAL_LAYERS = [
+  { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 80 },
+  { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 90 },
+];
 
 function applyState(snapshot) {
   for (const [key, value] of Object.entries(snapshot)) {
@@ -39,11 +39,10 @@ function applyState(snapshot) {
 // ─── 1. Initialise state ────────────────────────────────────────────────
 applyState(initialState());
 applyState(readyState());
-setValue('layers', []);
+setValue('layers', INITIAL_LAYERS);
 setValue('playheadIdx', 0);
 setValue('playing', false);
 setValue('vectorColorMode', 'speed');
-syncLayersToState();
 
 // ─── 2. Async pipelines ────────────────────────────────────────────────
 addAsync('radarHistory', async () => {
@@ -126,17 +125,18 @@ function syncMapWithState() {
   if (frames && frames.length > 0) {
     mapHandle.showFrame(clampIdx(appState.playheadIdx, frames.length));
   }
-  for (const layer of layers.list()) applyLayerToMap(layer);
+  for (const layer of appState.layers ?? []) applyLayerToMap(layer);
 }
 
 function applyLayerToMap(layer) {
   if (!mapHandle || !layer) return;
+  const opacity = (layer.opacity ?? 0) / 100;
   if (layer.id === RADAR_LAYER_ID) {
     mapHandle.setVisible(layer.visible);
-    mapHandle.setOpacity(layer.opacity);
+    mapHandle.setOpacity(opacity);
   } else if (layer.id === VECTORS_LAYER_ID) {
     mapHandle.setVectorsVisible(layer.visible);
-    mapHandle.setVectorsOpacity(layer.opacity);
+    mapHandle.setVectorsOpacity(opacity);
   }
 }
 
@@ -247,24 +247,9 @@ defineFn('seekPlayhead', (el) => {
 
 // data-each rows carry the layer id via `:data-layer-id="item.id"` so
 // we can identify which row was toggled without ambient context.
-// Identifying the row's layer via `:name="item.id"` because Spektrum's
-// `:attr` binding sets el[prop] (good for `name`, `value`, `checked`)
-// but does NOT call setAttribute — so `:data-layer-id` would not
-// populate el.dataset.layerId.
-defineFn('toggleLayer', (el) => {
-  const id = el.name;
-  if (!id || !layers.has(id)) return;
-  layers.setVisible(id, !layers.get(id).visible);
-  syncLayersToState();
-});
-
-defineFn('setLayerOpacity', (el) => {
-  const id = el.name;
-  if (!id || !layers.has(id)) return;
-  const v = Number(el.value);
-  layers.setOpacity(id, Number.isFinite(v) ? v / 100 : 0);
-  syncLayersToState();
-});
+// (Layer toggle + opacity are wired via data-model="item.visible" and
+// data-model="item.opacity.number" in the template — Spektrum updates
+// appState.layers[i] directly, the layers watcher pushes to the map.)
 
 defineFn('setColorMode', (el) => {
   const mode = el.value;
