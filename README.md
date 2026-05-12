@@ -6,7 +6,7 @@ Browser-only short-term precipitation forecasting. Pulls recent radar imagery (R
 
 ## Status
 
-Early development. See the [plan](https://github.com/D-dezeeuw/skyo-prediction) for the phased roadmap.
+Early development. See [PLAN.md](./PLAN.md) for the phased roadmap (context, MVP architecture, agile breakdown into stories, post-MVP phases).
 
 ## Stack
 
