@@ -17,7 +17,7 @@
   </script>
 </head>
 <body>
-  <main id="app">
+  <main id="app" data-cloak>
     <header class="topbar">
       <h1>{{title}}</h1>
       <span class="status-pill" :class="{ready: status === 'Ready'}">{{status}}</span>
@@ -28,15 +28,17 @@
 
       <aside class="layers-panel">
         <h2>Layers</h2>
-        <ul class="layer-list" data-each="layers" data-as="item">
+        <ul class="layer-list" data-each="layers" data-as="item" data-key="item.id">
           <li class="layer-row">
             <label class="layer-toggle">
               <input type="checkbox" :checked="item.visible"
+                     :data-layer-id="item.id"
                      data-action="change" data-fn="toggleLayer">
               <span>{{item.name}}</span>
             </label>
             <input class="layer-opacity" type="range" min="0" max="100" step="1"
                    :value="item.opacity * 100"
+                   :data-layer-id="item.id"
                    data-action="input" data-fn="setLayerOpacity"
                    aria-label="Opacity">
           </li>

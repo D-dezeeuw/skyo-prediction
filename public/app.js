@@ -1,4 +1,4 @@
-import { addAsync, appState, bindDOM, computed, defineFn, setValue, watch } from 'spektrum';
+import { addAsync, appState, bindDOM, computed, defineFn, run, setValue, watch } from 'spektrum';
 import { initialState, readyState } from './state.js';
 import { fetchManifest, loadHistory } from './radar.js';
 import { mountMap, DEFAULT_VIEW } from './map.js';
@@ -209,31 +209,37 @@ watch(['playing'], () => {
 });
 
 // ─── 6. UI handlers ────────────────────────────────────────────────────
+// Spektrum handler signature: (el, state, delta, value, event).
+// `el` is the DOM element; `value` is the auto-parsed input value
+// (Number-coerced where possible). I had wrongly written
+// `(e) => e.target.value` as if the first arg were the Event.
 defineFn('togglePlay', () => setValue('playing', !appState.playing));
 
-defineFn('seekPlayhead', (e) => {
-  const v = Number(e.target.value);
+defineFn('seekPlayhead', (el) => {
+  const v = Number(el.value);
   setValue('playing', false);
   setValue('playheadIdx', Number.isFinite(v) ? Math.floor(v) : 0);
 });
 
-defineFn('toggleLayer', (e, ctx) => {
-  const id = ctx?.item?.id;
-  if (!id) return;
+// data-each rows carry the layer id via `:data-layer-id="item.id"` so
+// we can identify which row was toggled without ambient context.
+defineFn('toggleLayer', (el) => {
+  const id = el.dataset.layerId;
+  if (!id || !layers.has(id)) return;
   layers.setVisible(id, !layers.get(id).visible);
   syncLayersToState();
 });
 
-defineFn('setLayerOpacity', (e, ctx) => {
-  const id = ctx?.item?.id;
-  if (!id) return;
-  const v = Number(e.target.value);
+defineFn('setLayerOpacity', (el) => {
+  const id = el.dataset.layerId;
+  if (!id || !layers.has(id)) return;
+  const v = Number(el.value);
   layers.setOpacity(id, Number.isFinite(v) ? v / 100 : 0);
   syncLayersToState();
 });
 
-defineFn('setColorMode', (e) => {
-  const mode = e.target.value;
+defineFn('setColorMode', (el) => {
+  const mode = el.value;
   if (COLOR_MODES.includes(mode)) setValue('vectorColorMode', mode);
 });
 
@@ -243,3 +249,8 @@ if (typeof window !== 'undefined') {
 
 // ─── 7. Bind DOM (must be last so all defineFn / setValue land first) ──
 bindDOM(document.getElementById('app'));
+
+// ─── 8. Start the rAF tick pump that drains the delta and propagates ──
+//        state changes. Without this, every setValue writes to the
+//        delta but it never commits, so the UI never updates.
+run();

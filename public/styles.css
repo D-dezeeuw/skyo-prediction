@@ -11,6 +11,11 @@
 
 * { box-sizing: border-box; }
 
+/* FOUC suppression: hide bound elements until Spektrum's bindDOM
+ * finishes and strips the data-cloak attribute. Uses visibility so
+ * the layout doesn't shift on reveal. */
+[data-cloak] { visibility: hidden; }
+
 html, body {
   margin: 0;
   padding: 0;
