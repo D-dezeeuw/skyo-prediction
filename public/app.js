@@ -40,14 +40,28 @@ mountMap(document.getElementById('map'), {
 });
 /* node:coverage enable */
 
+// Two-stage radar pipeline so the visual overlay never depends on the
+// (much-more-failure-prone) PNG decode step.
 addAsync('radarHistory', async () => {
   const manifest = await fetchManifest();
   const frames = manifest.past.slice(-HISTORY_FRAME_COUNT);
-  return { host: manifest.host, frames, decoded: await loadHistory(manifest, HISTORY_FRAME_COUNT) };
+  console.info(`[skyo-prediction] manifest ok; ${frames.length} frames available`);
+  return { host: manifest.host, manifest, frames };
+});
+
+const refetchGrids = addAsync('radarGrids', async () => {
+  const data = appState.radarHistory?.data;
+  if (!data) return null;
+  /* node:coverage disable */
+  const t0 = performance.now();
+  const decoded = await loadHistory(data.manifest, HISTORY_FRAME_COUNT);
+  console.info(`[skyo-prediction] decoded ${decoded.length} / ${data.frames.length} frames in ${(performance.now() - t0).toFixed(0)} ms`);
+  return decoded;
+  /* node:coverage enable */
 });
 
 const refetchFlow = addAsync('flowField', async () => {
-  const decoded = appState.radarHistory?.data?.decoded;
+  const decoded = appState.radarGrids?.data;
   if (!decoded || decoded.length < 2) return null;
   // Yield once before crunching ~200ms of SSDs so the UI thread can
   // render the "computing" state.
@@ -81,8 +95,16 @@ computed('flowStatus', ['flowField'], (s) => {
   return 'idle';
 });
 
-// When radar data arrives, auto-seek to the latest frame (once) and
-// re-run flow on the freshly decoded grids.
+computed('gridStatus', ['radarGrids'], (s) => {
+  const g = s.radarGrids;
+  if (!g) return 'idle';
+  if (g.loading) return 'decoding';
+  if (g.error) return `error: ${g.error.message}`;
+  if (g.data) return `${g.data.length} grids`;
+  return 'idle';
+});
+
+// Stage 1: frames arrive → install tile overlay + auto-seek + kick off decode.
 watch(['radarHistory.data'], () => {
   const frames = appState.radarHistory?.data?.frames;
   if (!frames || frames.length === 0) return;
@@ -90,10 +112,17 @@ watch(['radarHistory.data'], () => {
     setValue('playheadIdx', frames.length - 1);
     autoSeekDone = true;
   }
-  /* node:coverage disable */
-  if (appState.radarHistory?.data?.decoded?.length >= 2) refetchFlow();
-  /* node:coverage enable */
   syncMapWithState();
+  /* node:coverage disable */
+  refetchGrids();
+  /* node:coverage enable */
+});
+
+// Stage 2: decoded grids arrive → kick off flow.
+watch(['radarGrids.data'], () => {
+  /* node:coverage disable */
+  if ((appState.radarGrids?.data?.length ?? 0) >= 2) refetchFlow();
+  /* node:coverage enable */
 });
 
 watch(['playheadIdx'], () => {
@@ -120,7 +149,7 @@ watch(['flowField.data', 'playheadIdx', 'vectorColorMode'], () => {
     mapHandle.setVectors([]);
     return;
   }
-  const decoded = appState.radarHistory?.data?.decoded;
+  const decoded = appState.radarGrids?.data;
   const frame = decoded?.[clampIdx(appState.playheadIdx, decoded?.length ?? 0)];
   const arrows = buildArrows(flow, {
     tileSize: TILE_SIZE,

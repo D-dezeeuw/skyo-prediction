@@ -95,6 +95,14 @@ export async function fetchManifest({ fetchImpl = globalThis.fetch, url = RAINVI
 }
 
 /* node:coverage disable */
+function makeCanvas(size) {
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(size, size);
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  return canvas;
+}
+
 /**
  * Browser-only: fetch a tile PNG, decode via canvas, return a rain-rate grid.
  * Untestable from Node without bringing in jsdom/canvas (forbidden by the
@@ -110,7 +118,7 @@ export async function loadFrame(url, { size = 256 } = {}) {
   img.src = url;
   await loaded;
 
-  const canvas = new OffscreenCanvas(size, size);
+  const canvas = makeCanvas(size);
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(img, 0, 0, size, size);
   const { data } = ctx.getImageData(0, 0, size, size);
@@ -121,9 +129,14 @@ export async function loadFrame(url, { size = 256 } = {}) {
   };
 }
 
+/**
+ * Decode up to `count` recent frames. Failures are logged but don't reject
+ * the whole batch — callers downstream of decode (flow, advect) gate on
+ * `decoded.length >= 2` and so degrade gracefully.
+ */
 export async function loadHistory(manifest, count = 12, frameOptions) {
   const frames = selectRecentFrames(manifest, count);
-  const decoded = await Promise.all(
+  const settled = await Promise.allSettled(
     frames.map(async (frame) => ({
       time: frame.time,
       ...(await loadFrame(buildFrameUrl(manifest.host, frame, frameOptions), {
@@ -131,6 +144,14 @@ export async function loadHistory(manifest, count = 12, frameOptions) {
       })),
     })),
   );
+  const decoded = [];
+  for (let i = 0; i < settled.length; i++) {
+    if (settled[i].status === 'fulfilled') {
+      decoded.push(settled[i].value);
+    } else {
+      console.warn(`[skyo-prediction] decode failed for frame ${i}:`, settled[i].reason);
+    }
+  }
   return decoded;
 }
 /* node:coverage enable */
