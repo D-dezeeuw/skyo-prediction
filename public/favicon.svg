@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="skyo-prediction">
+  <title>skyo-prediction</title>
+  <!-- motion / prediction trail -->
+  <path d="M 4 30 Q 14 26 22 24" stroke="#6cd4ff" stroke-width="3" stroke-linecap="round" fill="none" opacity="0.45"/>
+  <path d="M 6 40 Q 16 36 24 32" stroke="#6cd4ff" stroke-width="3" stroke-linecap="round" fill="none" opacity="0.25"/>
+  <!-- raindrop -->
+  <path d="M 38 6 Q 56 26 56 42 A 18 18 0 0 1 20 42 Q 20 26 38 6 Z" fill="#6cd4ff"/>
+</svg>
