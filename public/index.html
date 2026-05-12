@@ -31,15 +31,11 @@
         <ul class="layer-list" data-each="layers" data-as="item" data-key="item.id">
           <li class="layer-row">
             <label class="layer-toggle">
-              <input type="checkbox" :checked="item.visible"
-                     :name="item.id"
-                     data-action="change" data-fn="toggleLayer">
+              <input type="checkbox" data-model="item.visible">
               <span>{{item.name}}</span>
             </label>
             <input class="layer-opacity" type="range" min="0" max="100" step="1"
-                   :value="item.opacity * 100"
-                   :name="item.id"
-                   data-action="input" data-fn="setLayerOpacity"
+                   data-model="item.opacity.number"
                    aria-label="Opacity">
           </li>
         </ul>

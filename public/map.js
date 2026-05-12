@@ -48,23 +48,10 @@ async function ensureLeaflet() {
 export async function mountMap(el, { view = DEFAULT_VIEW, host, frameOptions } = {}) {
   const L = await ensureLeaflet();
 
-  const map = L.map(el, {
-    zoomControl: true,
-    attributionControl: true,
-    minZoom: 3,
-    maxZoom: 12,
-    worldCopyJump: true,
-  }).setView([view.lat, view.lon], view.zoom);
-
-  const baseCfg = BASE_STYLES.dark;
-  L.tileLayer(baseCfg.url, baseCfg).addTo(map);
-
-  let radarLayers = [];
-  let currentIdx = -1;
-  let visible = true;
-  let opacity = 0.8;
-
-  // Vectors overlay (motion field). Anchored to the radar tile's lat/lon bounds.
+  // Decode tile bounds drive both the map view AND the vectors overlay
+  // anchor. Locking the map to these bounds is what makes "decoded
+  // grids match the flow field": you can pan/zoom inside the tile but
+  // never out of the area we have decoded grids for.
   const tileX = frameOptions?.x ?? 16;
   const tileY = frameOptions?.y ?? 10;
   const tileZ = frameOptions?.zoom ?? 5;
@@ -74,6 +61,24 @@ export async function mountMap(el, { view = DEFAULT_VIEW, host, frameOptions } =
     L.latLng(bounds.latBottom, bounds.lonLeft),
     L.latLng(bounds.latTop, bounds.lonRight),
   );
+
+  const map = L.map(el, {
+    zoomControl: true,
+    attributionControl: true,
+    minZoom: tileZ,
+    maxZoom: 10,
+    maxBounds: latLngBounds.pad(0.05),
+    maxBoundsViscosity: 1.0,
+  });
+  map.fitBounds(latLngBounds);
+
+  const baseCfg = BASE_STYLES.dark;
+  L.tileLayer(baseCfg.url, baseCfg).addTo(map);
+
+  let radarLayers = [];
+  let currentIdx = -1;
+  let visible = true;
+  let opacity = 0.8;
 
   const vectorsSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   vectorsSvg.setAttribute('viewBox', `0 0 ${tileSize} ${tileSize}`);
