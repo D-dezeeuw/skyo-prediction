@@ -5,6 +5,7 @@ import {
   DEFAULT_SEARCH_RADIUS,
   DEFAULT_SMOOTHING_WINDOW,
   computeFlow,
+  computeFlowPairs,
   smoothFlows,
   flowFromHistory,
 } from '../public/flow.js';
@@ -198,6 +199,58 @@ describe('smoothFlows', () => {
     assert.equal(out.width, 4);
     assert.equal(out.height, 3);
     assert.equal(out.blockSize, 32);
+  });
+});
+
+describe('computeFlowPairs', () => {
+  test('returns [] for fewer than 2 entries', () => {
+    assert.deepEqual(computeFlowPairs([]), []);
+    assert.deepEqual(computeFlowPairs([{ grid: new Float32Array(4), width: 2, height: 2 }]), []);
+    assert.deepEqual(computeFlowPairs(null), []);
+    assert.deepEqual(computeFlowPairs(undefined), []);
+  });
+
+  test('returns N-1 fields for N grids', () => {
+    const w = 64, h = 64;
+    const base = texturedGrid(w, h);
+    const history = [
+      { grid: base, width: w, height: h },
+      { grid: shifted(base, w, h, 1, 0), width: w, height: h },
+      { grid: shifted(base, w, h, 2, 0), width: w, height: h },
+      { grid: shifted(base, w, h, 3, 0), width: w, height: h },
+    ];
+    const pairs = computeFlowPairs(history);
+    assert.equal(pairs.length, 3);
+  });
+
+  test('each pair captures the motion from history[i] to history[i+1]', () => {
+    const w = 64, h = 64;
+    const base = texturedGrid(w, h);
+    // Three different per-step motions: +1, +3, +5
+    const history = [
+      { grid: base, width: w, height: h },
+      { grid: shifted(base, w, h, 1, 0), width: w, height: h },
+      { grid: shifted(base, w, h, 4, 0), width: w, height: h },  // +3 from prev
+      { grid: shifted(base, w, h, 9, 0), width: w, height: h },  // +5 from prev
+    ];
+    const pairs = computeFlowPairs(history);
+    // Sample interior block (2,2) of each pair
+    const i = (2 * pairs[0].width + 2) * 2;
+    assert.equal(pairs[0].data[i], 1);
+    assert.equal(pairs[1].data[i], 3);
+    assert.equal(pairs[2].data[i], 5);
+  });
+
+  test('forwards block-size and search-radius options', () => {
+    const w = 32, h = 32;
+    const base = texturedGrid(w, h);
+    const history = [
+      { grid: base, width: w, height: h },
+      { grid: shifted(base, w, h, 1, 0), width: w, height: h },
+    ];
+    const pairs = computeFlowPairs(history, { blockSize: 8, searchRadius: 4 });
+    assert.equal(pairs[0].blockSize, 8);
+    assert.equal(pairs[0].width, 4);
   });
 });
 

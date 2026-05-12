@@ -4,7 +4,7 @@ import { fetchManifest, loadHistory } from './radar.js';
 import { mountMap, DEFAULT_VIEW } from './map.js';
 import { createLayerRegistry } from './layers.js';
 import { clampIdx, formatFrameTime, nextIdx, FRAME_INTERVAL_MS } from './timeline.js';
-import { flowFromHistory } from './flow.js';
+import { computeFlowPairs, smoothFlows, DEFAULT_SMOOTHING_WINDOW } from './flow.js';
 import { buildArrows, COLOR_MODES } from './vectors.js';
 
 const RADAR_LAYER_ID = 'radar-history';
@@ -60,8 +60,9 @@ const refetchFlow = addAsync('flowField', async () => {
   if (!decoded || decoded.length < 2) return null;
   await Promise.resolve();
   const t0 = performance.now();
-  const field = flowFromHistory(decoded);
-  return field ? { ...field, computeMs: performance.now() - t0 } : null;
+  const pairs = computeFlowPairs(decoded);
+  const smoothed = smoothFlows(pairs.slice(-DEFAULT_SMOOTHING_WINDOW));
+  return { pairs, smoothed, computeMs: performance.now() - t0 };
 });
 
 // ─── 3. Computed selectors ─────────────────────────────────────────────
@@ -83,7 +84,10 @@ computed('flowStatus', ['flowField'], (s) => {
   if (!f) return 'idle';
   if (f.loading) return 'computing';
   if (f.error) return `error: ${f.error.message}`;
-  if (f.data) return `ready: ${f.data.width}×${f.data.height} field in ${f.data.computeMs.toFixed(0)} ms`;
+  if (f.data) {
+    const { smoothed, pairs, computeMs } = f.data;
+    return `ready: ${smoothed.width}×${smoothed.height} field, ${pairs.length} pairs in ${computeMs.toFixed(0)} ms`;
+  }
   return 'idle';
 });
 
@@ -177,13 +181,22 @@ watch(['layers'], () => {
 watch(['flowField.data', 'playheadIdx', 'vectorColorMode'], () => {
   /* node:coverage disable */
   if (!mapHandle) return;
-  const flow = appState.flowField?.data;
-  if (!flow) {
+  const data = appState.flowField?.data;
+  if (!data) {
     mapHandle.setVectors([]);
     return;
   }
   const decoded = appState.radarGrids?.data;
-  const frame = decoded?.[clampIdx(appState.playheadIdx, decoded?.length ?? 0)];
+  const idx = clampIdx(appState.playheadIdx, decoded?.length ?? 0);
+  // Pair i is the motion from frame i → frame i+1, so when *viewing*
+  // frame i we show the pair that *led to* this frame: pairs[i-1].
+  // Frame 0 has no preceding pair, so fall back to the smoothed field.
+  const flow = idx > 0 ? data.pairs[idx - 1] : data.smoothed;
+  if (!flow) {
+    mapHandle.setVectors([]);
+    return;
+  }
+  const frame = decoded?.[idx];
   const arrows = buildArrows(flow, {
     tileSize: TILE_SIZE,
     colorMode: appState.vectorColorMode,
