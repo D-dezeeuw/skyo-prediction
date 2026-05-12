@@ -2,6 +2,8 @@
 
 Browser-only short-term precipitation forecasting. Pulls recent radar imagery (RainViewer), estimates cloud motion via optical flow, and extrapolates the rain field forward in time — all client-side. No backend, no ML weights, no compilation step.
 
+**[Live demo →](https://d-dezeeuw.github.io/skyo-prediction/)**
+
 ## Status
 
 Early development. See the [plan](https://github.com/D-dezeeuw/skyo-prediction) for the phased roadmap.
