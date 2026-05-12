@@ -71,22 +71,32 @@ export function smoothFlows(fields) {
 }
 
 /**
- * Compute flow between every adjacent pair of grids in `history`, then
- * smooth the last `window` fields. Returns null if fewer than 2 grids.
+ * Compute the flow field between every adjacent pair of grids in
+ * `history`. Returns an array of N-1 fields for N grids; pair i is the
+ * motion from history[i] to history[i+1]. Empty array if <2 grids.
  *
  * Each history entry must shape as { grid: Float32Array, width, height }.
  */
-export function flowFromHistory(history, options = {}) {
-  if (!Array.isArray(history) || history.length < 2) return null;
-  const { window = DEFAULT_SMOOTHING_WINDOW, ...flowOpts } = options;
+export function computeFlowPairs(history, options = {}) {
+  if (!Array.isArray(history) || history.length < 2) return [];
   const fields = [];
   for (let i = 1; i < history.length; i++) {
     const a = history[i - 1];
     const b = history[i];
-    fields.push(computeFlow(a.grid, b.grid, a.width, a.height, flowOpts));
+    fields.push(computeFlow(a.grid, b.grid, a.width, a.height, options));
   }
-  const tail = fields.slice(-Math.max(1, window));
-  return smoothFlows(tail);
+  return fields;
+}
+
+/**
+ * Convenience: compute per-pair fields and return the last `window`
+ * smoothed into a single field. Returns null if fewer than 2 grids.
+ */
+export function flowFromHistory(history, options = {}) {
+  const { window = DEFAULT_SMOOTHING_WINDOW, ...flowOpts } = options;
+  const pairs = computeFlowPairs(history, flowOpts);
+  if (pairs.length === 0) return null;
+  return smoothFlows(pairs.slice(-Math.max(1, window)));
 }
 
 function bestMatch(prev, curr, x0, y0, blockSize, search, w, h) {
