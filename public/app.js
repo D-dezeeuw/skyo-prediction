@@ -4,6 +4,7 @@ import { fetchManifest, loadHistory } from './radar.js';
 import { mountMap, DEFAULT_VIEW } from './map.js';
 import { createLayerRegistry } from './layers.js';
 import { clampIdx, formatFrameTime, nextIdx, FRAME_INTERVAL_MS } from './timeline.js';
+import { flowFromHistory } from './flow.js';
 
 const RADAR_LAYER_ID = 'radar-history';
 const HISTORY_FRAME_COUNT = 12;
@@ -54,6 +55,34 @@ computed('currentFrameTime', ['radarHistory.data', 'playheadIdx'], (s) => {
   if (!frames || frames.length === 0) return '';
   const idx = clampIdx(s.playheadIdx, frames.length);
   return formatFrameTime(frames[idx].time);
+});
+
+const refetchFlow = addAsync('flowField', async () => {
+  const decoded = appState.radarHistory?.data?.decoded;
+  if (!decoded || decoded.length < 2) return null;
+  // Yield once before crunching ~200ms of SSDs so the UI thread can
+  // render the "computing" state.
+  await Promise.resolve();
+  const t0 = performance.now();
+  const field = flowFromHistory(decoded);
+  return field ? { ...field, computeMs: performance.now() - t0 } : null;
+});
+
+watch(['radarHistory.data'], () => {
+  if (appState.radarHistory?.data?.decoded?.length >= 2) {
+    /* node:coverage disable */
+    refetchFlow.run?.();
+    /* node:coverage enable */
+  }
+});
+
+computed('flowStatus', ['flowField'], (s) => {
+  const f = s.flowField;
+  if (!f) return 'idle';
+  if (f.loading) return 'computing';
+  if (f.error) return `error: ${f.error.message}`;
+  if (f.data) return `ready: ${f.data.width}×${f.data.height} field in ${f.data.computeMs.toFixed(0)} ms`;
+  return 'idle';
 });
 
 watch(['radarHistory.data', 'playheadIdx'], () => {
