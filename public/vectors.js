@@ -84,13 +84,25 @@ export function intensityColor(mmPerHour) {
  *   flow.data: Float32Array, packed [vx,vy] per block
  *   tileSize : pixel size of the SVG viewBox (e.g. 256)
  *   radarGrid: optional same-as-tile-size Float32Array of rain rates
- *              (mm/h) — required when colorMode === 'intensity'.
+ *              (mm/h) — required when colorMode === 'intensity', and
+ *              used for intensity-based arrow gating.
+ *   intensityThreshold: skip blocks whose centre samples below this
+ *              rain rate (mm/h). 0 → render every block (legacy).
+ *              Has no effect when radarGrid is missing.
  */
-export function buildArrows(flow, { tileSize = 256, colorMode = 'speed', radarGrid = null, radarWidth = 0, scale = DEFAULT_ARROW_SCALE } = {}) {
+export function buildArrows(flow, {
+  tileSize = 256,
+  colorMode = 'speed',
+  radarGrid = null,
+  radarWidth = 0,
+  scale = DEFAULT_ARROW_SCALE,
+  intensityThreshold = 0,
+} = {}) {
   if (!flow || !flow.data || !flow.width || !flow.height) return [];
   const mode = COLOR_MODES.includes(colorMode) ? colorMode : 'speed';
   const blockPxX = tileSize / flow.width;
   const blockPxY = tileSize / flow.height;
+  const gateOnIntensity = radarGrid && radarWidth > 0 && intensityThreshold > 0;
 
   let refMagnitude = 0;
   if (mode === 'speed') {
@@ -103,16 +115,18 @@ export function buildArrows(flow, { tileSize = 256, colorMode = 'speed', radarGr
   const out = [];
   for (let by = 0; by < flow.height; by++) {
     for (let bx = 0; bx < flow.width; bx++) {
+      const cx = (bx + 0.5) * blockPxX;
+      const cy = (by + 0.5) * blockPxY;
+      const sampled = gateOnIntensity ? sampleRadar(radarGrid, radarWidth, cx, cy) : 0;
+      if (gateOnIntensity && sampled < intensityThreshold) continue;
       const i = (by * flow.width + bx) * 2;
       const vx = flow.data[i];
       const vy = flow.data[i + 1];
       const magnitude = Math.hypot(vx, vy);
-      const cx = (bx + 0.5) * blockPxX;
-      const cy = (by + 0.5) * blockPxY;
       const d = arrowPath(cx, cy, vx, vy, scale);
       const color = mode === 'speed'
         ? magnitudeColor(magnitude, refMagnitude)
-        : intensityColor(sampleRadar(radarGrid, radarWidth, cx, cy));
+        : intensityColor(gateOnIntensity ? sampled : sampleRadar(radarGrid, radarWidth, cx, cy));
       out.push({ d, color, magnitude });
     }
   }
