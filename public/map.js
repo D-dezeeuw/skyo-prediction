@@ -11,6 +11,7 @@
  */
 
 import { buildTileUrlTemplate } from './radar.js';
+import { tileBounds } from './vectors.js';
 
 const LEAFLET_VERSION = '1.9.4';
 const LEAFLET_CSS = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`;
@@ -63,9 +64,34 @@ export async function mountMap(el, { view = DEFAULT_VIEW, host, frameOptions } =
   let visible = true;
   let opacity = 0.8;
 
+  // Vectors overlay (motion field). Anchored to the radar tile's lat/lon bounds.
+  const tileX = frameOptions?.x ?? 16;
+  const tileY = frameOptions?.y ?? 10;
+  const tileZ = frameOptions?.zoom ?? 5;
+  const tileSize = frameOptions?.size ?? 256;
+  const bounds = tileBounds(tileX, tileY, tileZ);
+  const latLngBounds = L.latLngBounds(
+    L.latLng(bounds.latBottom, bounds.lonLeft),
+    L.latLng(bounds.latTop, bounds.lonRight),
+  );
+
+  const vectorsSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  vectorsSvg.setAttribute('viewBox', `0 0 ${tileSize} ${tileSize}`);
+  vectorsSvg.setAttribute('preserveAspectRatio', 'none');
+  vectorsSvg.style.pointerEvents = 'none';
+  const vectorsOverlay = L.svgOverlay(vectorsSvg, latLngBounds, {
+    opacity: 0,
+    interactive: false,
+  }).addTo(map);
+  let vectorsVisible = true;
+  let vectorsOpacity = 0.9;
+
   const applyOpacity = () => {
     if (currentIdx < 0 || !radarLayers[currentIdx]) return;
     radarLayers[currentIdx].setOpacity(visible ? opacity : 0);
+  };
+  const applyVectorsOpacity = () => {
+    vectorsOverlay.setOpacity(vectorsVisible ? vectorsOpacity : 0);
   };
 
   return {
@@ -100,6 +126,27 @@ export async function mountMap(el, { view = DEFAULT_VIEW, host, frameOptions } =
     setVisible(v) {
       visible = Boolean(v);
       applyOpacity();
+    },
+    setVectors(arrows) {
+      while (vectorsSvg.firstChild) vectorsSvg.removeChild(vectorsSvg.firstChild);
+      for (const a of arrows) {
+        const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        p.setAttribute('d', a.d);
+        p.setAttribute('stroke', a.color);
+        p.setAttribute('stroke-width', '1.2');
+        p.setAttribute('stroke-linecap', 'round');
+        p.setAttribute('fill', 'none');
+        vectorsSvg.appendChild(p);
+      }
+      applyVectorsOpacity();
+    },
+    setVectorsOpacity(v) {
+      vectorsOpacity = Math.max(0, Math.min(1, v));
+      applyVectorsOpacity();
+    },
+    setVectorsVisible(v) {
+      vectorsVisible = Boolean(v);
+      applyVectorsOpacity();
     },
     destroy() {
       map.remove();

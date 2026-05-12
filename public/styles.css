@@ -117,6 +117,30 @@ h2 {
   width: 100%;
 }
 
+.color-mode {
+  margin-top: 0.85rem;
+  padding: 0.4rem 0.55rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.85rem;
+}
+.color-mode legend {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 0 0.3rem;
+}
+.color-mode label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
 .timeline {
   display: flex;
   align-items: center;
