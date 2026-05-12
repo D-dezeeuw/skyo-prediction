@@ -41,6 +41,22 @@
           </li>
         </ul>
         <p class="muted small" data-if="!layers.length">No layers yet — radar will appear here.</p>
+
+        <fieldset class="color-mode">
+          <legend>Vector colour</legend>
+          <label>
+            <input type="radio" name="vector-color" value="speed"
+                   :checked="vectorColorMode === 'speed'"
+                   data-fn-change="setColorMode">
+            <span>Speed</span>
+          </label>
+          <label>
+            <input type="radio" name="vector-color" value="intensity"
+                   :checked="vectorColorMode === 'intensity'"
+                   data-fn-change="setColorMode">
+            <span>Intensity</span>
+          </label>
+        </fieldset>
       </aside>
     </div>
 

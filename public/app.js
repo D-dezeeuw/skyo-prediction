@@ -5,12 +5,16 @@ import { mountMap, DEFAULT_VIEW } from './map.js';
 import { createLayerRegistry } from './layers.js';
 import { clampIdx, formatFrameTime, nextIdx, FRAME_INTERVAL_MS } from './timeline.js';
 import { flowFromHistory } from './flow.js';
+import { buildArrows, COLOR_MODES } from './vectors.js';
 
 const RADAR_LAYER_ID = 'radar-history';
+const VECTORS_LAYER_ID = 'motion-vectors';
 const HISTORY_FRAME_COUNT = 12;
+const TILE_SIZE = 256;
 
 const layers = createLayerRegistry([
   { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 0.8 },
+  { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 0.9 },
 ]);
 
 function syncLayersToState() {
@@ -45,6 +49,7 @@ addAsync('radarHistory', async () => {
 
 setValue('playheadIdx', 0);
 setValue('playing', false);
+setValue('vectorColorMode', 'speed');
 
 computed('frameCount', ['radarHistory.data'], (s) =>
   s.radarHistory?.data?.frames ? s.radarHistory.data.frames.length : 0,
@@ -96,6 +101,28 @@ watch(['layers'], () => {
   if (!mapHandle) return;
   const radar = appState.layers?.find((l) => l.id === RADAR_LAYER_ID);
   if (radar) applyLayerToMap(radar);
+  const vectors = appState.layers?.find((l) => l.id === VECTORS_LAYER_ID);
+  if (vectors) applyLayerToMap(vectors);
+});
+
+watch(['flowField.data', 'playheadIdx', 'vectorColorMode'], () => {
+  /* node:coverage disable */
+  if (!mapHandle) return;
+  const flow = appState.flowField?.data;
+  if (!flow) {
+    mapHandle.setVectors([]);
+    return;
+  }
+  const decoded = appState.radarHistory?.data?.decoded;
+  const frame = decoded?.[clampIdx(appState.playheadIdx, decoded?.length ?? 0)];
+  const arrows = buildArrows(flow, {
+    tileSize: TILE_SIZE,
+    colorMode: appState.vectorColorMode,
+    radarGrid: frame?.grid ?? null,
+    radarWidth: frame?.width ?? 0,
+  });
+  mapHandle.setVectors(arrows);
+  /* node:coverage enable */
 });
 
 let playInterval = 0;
@@ -135,6 +162,11 @@ defineFn('setLayerOpacity', (e, ctx) => {
   syncLayersToState();
 });
 
+defineFn('setColorMode', (e) => {
+  const mode = e.target.value;
+  if (COLOR_MODES.includes(mode)) setValue('vectorColorMode', mode);
+});
+
 if (typeof window !== 'undefined') {
   window.appState = appState;
 }
@@ -156,6 +188,9 @@ function applyLayerToMap(layer) {
   if (layer.id === RADAR_LAYER_ID) {
     mapHandle.setVisible(layer.visible);
     mapHandle.setOpacity(layer.opacity);
+  } else if (layer.id === VECTORS_LAYER_ID) {
+    mapHandle.setVectorsVisible(layer.visible);
+    mapHandle.setVectorsOpacity(layer.opacity);
   }
 }
 /* node:coverage enable */
