@@ -1,0 +1,150 @@
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  PALETTE_STOPS,
+  TRANSPARENT_DBZ,
+  dbzToRainRate,
+  rainRateToDbz,
+  rgbToDbz,
+  dbzToRgb,
+  decodeRgbaToRainRate,
+} from '../public/palette.js';
+
+describe('PALETTE_STOPS', () => {
+  test('first stop is the transparent / no-rain anchor', () => {
+    assert.equal(PALETTE_STOPS[0].dbz, TRANSPARENT_DBZ);
+  });
+
+  test('rain-bearing stops are monotonically increasing in dBZ', () => {
+    const rainStops = PALETTE_STOPS.filter((s) => Number.isFinite(s.dbz));
+    for (let i = 1; i < rainStops.length; i++) {
+      assert.ok(
+        rainStops[i].dbz > rainStops[i - 1].dbz,
+        `stop ${i} (dbz=${rainStops[i].dbz}) must exceed previous (${rainStops[i - 1].dbz})`,
+      );
+    }
+  });
+
+  test('every stop has a 3-element rgb tuple in [0,255]', () => {
+    for (const s of PALETTE_STOPS) {
+      assert.equal(s.rgb.length, 3);
+      for (const c of s.rgb) {
+        assert.ok(c >= 0 && c <= 255, `channel ${c} out of range`);
+      }
+    }
+  });
+});
+
+describe('Marshall-Palmer Z-R', () => {
+  test('dbzToRainRate returns 0 for non-finite input', () => {
+    assert.equal(dbzToRainRate(TRANSPARENT_DBZ), 0);
+    assert.equal(dbzToRainRate(NaN), 0);
+  });
+
+  test('dbzToRainRate increases monotonically with dBZ', () => {
+    let prev = -Infinity;
+    for (let dbz = 0; dbz <= 60; dbz += 5) {
+      const r = dbzToRainRate(dbz);
+      assert.ok(r > prev, `expected R(${dbz})>${prev}, got ${r}`);
+      prev = r;
+    }
+  });
+
+  test('rainRateToDbz returns -Infinity for zero/negative rain', () => {
+    assert.equal(rainRateToDbz(0), TRANSPARENT_DBZ);
+    assert.equal(rainRateToDbz(-1), TRANSPARENT_DBZ);
+  });
+
+  test('round-trips dbz → mm/h → dbz to high precision', () => {
+    for (const dbz of [5, 15, 25, 35, 45, 55]) {
+      const r = dbzToRainRate(dbz);
+      const back = rainRateToDbz(r);
+      assert.ok(Math.abs(back - dbz) < 1e-9, `round-trip ${dbz} -> ${r} -> ${back}`);
+    }
+  });
+
+  test('approximate physical sanity: 30 dBZ gives ~3 mm/h, 50 dBZ ~50 mm/h', () => {
+    // Marshall-Palmer textbook ballpark
+    assert.ok(dbzToRainRate(30) > 2 && dbzToRainRate(30) < 4);
+    assert.ok(dbzToRainRate(50) > 30 && dbzToRainRate(50) < 80);
+  });
+});
+
+describe('rgbToDbz', () => {
+  test('alpha = 0 always decodes to TRANSPARENT_DBZ regardless of colour', () => {
+    assert.equal(rgbToDbz(255, 255, 255, 0), TRANSPARENT_DBZ);
+    assert.equal(rgbToDbz(123, 45, 67, 0), TRANSPARENT_DBZ);
+  });
+
+  test('exact palette colours decode to their stop dBZ', () => {
+    for (const stop of PALETTE_STOPS.filter((s) => Number.isFinite(s.dbz))) {
+      const [r, g, b] = stop.rgb;
+      assert.equal(rgbToDbz(r, g, b, 255), stop.dbz);
+    }
+  });
+
+  test('near-palette colours snap to nearest stop', () => {
+    // Slightly-off pure red -> 50 dBZ stop (rgb 255,0,0)
+    assert.equal(rgbToDbz(250, 5, 5), 50);
+  });
+
+  test('pure black opaque pixel decodes to TRANSPARENT_DBZ (no-rain anchor)', () => {
+    assert.equal(rgbToDbz(0, 0, 0, 255), TRANSPARENT_DBZ);
+  });
+
+  test('alpha defaults to 255 (opaque) when omitted', () => {
+    assert.equal(rgbToDbz(255, 0, 0), 50);
+  });
+});
+
+describe('dbzToRgb', () => {
+  test('non-finite or sub-threshold dbz returns the no-rain colour', () => {
+    assert.deepEqual([...dbzToRgb(TRANSPARENT_DBZ)], [0, 0, 0]);
+    assert.deepEqual([...dbzToRgb(NaN)], [0, 0, 0]);
+    assert.deepEqual([...dbzToRgb(-50)], [0, 0, 0]);
+  });
+
+  test('exact stop dBZ returns that stop colour', () => {
+    for (const stop of PALETTE_STOPS.filter((s) => Number.isFinite(s.dbz))) {
+      assert.deepEqual([...dbzToRgb(stop.dbz)], [...stop.rgb]);
+    }
+  });
+
+  test('mid-range dBZ snaps to closest stop', () => {
+    // 47 is between 45 and 50, closer to 45
+    const rgb45 = PALETTE_STOPS.find((s) => s.dbz === 45).rgb;
+    assert.deepEqual([...dbzToRgb(47)], [...rgb45]);
+  });
+});
+
+describe('decodeRgbaToRainRate', () => {
+  test('throws when buffer length does not match width*height*4', () => {
+    assert.throws(
+      () => decodeRgbaToRainRate(new Uint8ClampedArray(10), 2, 2),
+      /does not match/,
+    );
+  });
+
+  test('decodes a 2x2 grid of mixed pixels into a Float32Array of mm/h', () => {
+    // Two transparent, one pure red (50 dBZ), one black opaque (no rain)
+    const buf = new Uint8ClampedArray([
+      0, 0, 0, 0,        // transparent
+      255, 0, 0, 255,    // red, 50 dBZ
+      0, 144, 0, 255,    // dark green, 30 dBZ
+      0, 0, 0, 255,      // black opaque, no rain
+    ]);
+    const grid = decodeRgbaToRainRate(buf, 2, 2);
+    assert.equal(grid.length, 4);
+    assert.equal(grid[0], 0);
+    assert.ok(grid[1] > 30 && grid[1] < 80, `expected ~50 dBZ rain rate, got ${grid[1]}`);
+    assert.ok(grid[2] > 2 && grid[2] < 4, `expected ~30 dBZ rain rate, got ${grid[2]}`);
+    assert.equal(grid[3], 0);
+  });
+
+  test('returns a Float32Array with width*height entries', () => {
+    const buf = new Uint8ClampedArray(4 * 9);
+    const grid = decodeRgbaToRainRate(buf, 3, 3);
+    assert.ok(grid instanceof Float32Array);
+    assert.equal(grid.length, 9);
+  });
+});

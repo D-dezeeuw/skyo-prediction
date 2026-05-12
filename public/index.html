@@ -19,7 +19,14 @@
   <main id="app">
     <h1>{{title}}</h1>
     <p class="status" :class="{ready: status === 'Ready'}">{{status}}</p>
-    <p class="hint">Story 1 scaffold. Story 2 wires in RainViewer ingestion.</p>
+
+    <section class="radar-status">
+      <h2>Radar history</h2>
+      <p class="muted" data-if="radarHistory.loading">Loading frames from RainViewer…</p>
+      <p class="error" data-if="radarHistory.error">Failed to load: {{radarHistory.error.message}}</p>
+      <p data-if="frameCount">Loaded <strong>{{frameCount}}</strong> frames. Latest: <code>{{latestFrameTime}}</code></p>
+      <p class="hint">Inspect <code>appState.radarHistory.data</code> in the dev console to see decoded grids.</p>
+    </section>
   </main>
   <script type="module" src="/app.js"></script>
 </body>
