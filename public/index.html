@@ -62,8 +62,20 @@
       </span>
     </section>
 
+    <section class="pipeline">
+      <div class="pipe-stage">
+        <span class="pipe-label">Radar history</span>
+        <span class="pipe-value" data-if="frameCount">{{frameCount}} frames</span>
+        <span class="pipe-value muted" data-if="!frameCount">—</span>
+      </div>
+      <div class="pipe-stage">
+        <span class="pipe-label">Flow field</span>
+        <span class="pipe-value">{{flowStatus}}</span>
+      </div>
+    </section>
+
     <p class="error" data-if="radarHistory.error">Failed to load radar: {{radarHistory.error.message}}</p>
-    <p class="muted small">Inspect <code>appState</code> in the dev console to see decoded grids and registry state.</p>
+    <p class="muted small">Inspect <code>appState</code> in the dev console — <code>appState.flowField.data</code> exposes the smoothed vector field.</p>
   </main>
   <script type="module" src="/app.js"></script>
 </body>
