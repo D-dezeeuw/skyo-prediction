@@ -66,6 +66,22 @@ export function buildFrameUrl(host, frame, options = {}) {
   return `${host}${frame.path}/${size}/${zoom}/${x}/${y}/${colorScheme}/${smooth}_${snow}.png`;
 }
 
+/**
+ * Produce a Leaflet-compatible tile URL template containing {z}/{x}/{y}
+ * placeholders. Lets a single tileLayer cover any zoom and pan, instead
+ * of being pinned to one tile coordinate.
+ */
+export function buildTileUrlTemplate(host, frame, options = {}) {
+  if (typeof host !== 'string' || host.length === 0) {
+    throw new Error('buildTileUrlTemplate: host required');
+  }
+  if (!frame || typeof frame.path !== 'string') {
+    throw new Error('buildTileUrlTemplate: frame.path required');
+  }
+  const { size = DEFAULT_FRAME_OPTIONS.size, colorScheme = DEFAULT_FRAME_OPTIONS.colorScheme, smooth = DEFAULT_FRAME_OPTIONS.smooth, snow = DEFAULT_FRAME_OPTIONS.snow } = options;
+  return `${host}${frame.path}/${size}/{z}/{x}/{y}/${colorScheme}/${smooth}_${snow}.png`;
+}
+
 export async function fetchManifest({ fetchImpl = globalThis.fetch, url = RAINVIEWER_MANIFEST_URL } = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new Error('fetchManifest: no fetch implementation available');

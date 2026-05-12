@@ -17,16 +17,52 @@
 </head>
 <body>
   <main id="app">
-    <h1>{{title}}</h1>
-    <p class="status" :class="{ready: status === 'Ready'}">{{status}}</p>
+    <header class="topbar">
+      <h1>{{title}}</h1>
+      <span class="status-pill" :class="{ready: status === 'Ready'}">{{status}}</span>
+    </header>
 
-    <section class="radar-status">
-      <h2>Radar history</h2>
-      <p class="muted" data-if="radarHistory.loading">Loading frames from RainViewer…</p>
-      <p class="error" data-if="radarHistory.error">Failed to load: {{radarHistory.error.message}}</p>
-      <p data-if="frameCount">Loaded <strong>{{frameCount}}</strong> frames. Latest: <code>{{latestFrameTime}}</code></p>
-      <p class="hint">Inspect <code>appState.radarHistory.data</code> in the dev console to see decoded grids.</p>
+    <div class="map-wrap">
+      <div id="map" aria-label="Precipitation map"></div>
+
+      <aside class="layers-panel">
+        <h2>Layers</h2>
+        <ul class="layer-list" data-each="layers" data-as="item">
+          <li class="layer-row">
+            <label class="layer-toggle">
+              <input type="checkbox" :checked="item.visible" data-fn-change="toggleLayer">
+              <span>{{item.name}}</span>
+            </label>
+            <input class="layer-opacity" type="range" min="0" max="100" step="1"
+                   :value="item.opacity * 100"
+                   data-fn-input="setLayerOpacity"
+                   aria-label="Opacity">
+          </li>
+        </ul>
+        <p class="muted small" data-if="!layers.length">No layers yet — radar will appear here.</p>
+      </aside>
+    </div>
+
+    <section class="timeline">
+      <button class="play-btn" data-fn-click="togglePlay" aria-label="Play / pause">
+        <span data-if="!playing">▶</span>
+        <span data-if="playing">⏸</span>
+      </button>
+      <input type="range" class="scrubber"
+             min="0"
+             :max="frameCount > 0 ? frameCount - 1 : 0"
+             step="1"
+             :value="playheadIdx"
+             data-fn-input="seekPlayhead"
+             aria-label="Frame scrubber">
+      <span class="frame-meta">
+        <span data-if="frameCount">Frame {{playheadIdx}} / {{frameCount - 1}} · <code>{{currentFrameTime}}</code></span>
+        <span data-if="!frameCount" class="muted">Loading frames…</span>
+      </span>
     </section>
+
+    <p class="error" data-if="radarHistory.error">Failed to load radar: {{radarHistory.error.message}}</p>
+    <p class="muted small">Inspect <code>appState</code> in the dev console to see decoded grids and registry state.</p>
   </main>
   <script type="module" src="/app.js"></script>
 </body>

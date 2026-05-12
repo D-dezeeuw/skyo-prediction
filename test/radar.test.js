@@ -5,6 +5,7 @@ import {
   parseManifest,
   selectRecentFrames,
   buildFrameUrl,
+  buildTileUrlTemplate,
   fetchManifest,
 } from '../public/radar.js';
 
@@ -170,6 +171,35 @@ describe('buildFrameUrl', () => {
   test('throws on missing frame.path', () => {
     assert.throws(() => buildFrameUrl(host, {}), /frame\.path required/);
     assert.throws(() => buildFrameUrl(host, null), /frame\.path required/);
+  });
+});
+
+describe('buildTileUrlTemplate', () => {
+  const host = 'https://tilecache.rainviewer.com';
+  const frame = { path: '/v2/radar/1619994600' };
+
+  test('produces a Leaflet-compatible {z}/{x}/{y} template with defaults', () => {
+    const tpl = buildTileUrlTemplate(host, frame);
+    assert.equal(tpl, `${host}/v2/radar/1619994600/256/{z}/{x}/{y}/2/1_0.png`);
+  });
+
+  test('respects size, colorScheme, smooth, snow overrides', () => {
+    const tpl = buildTileUrlTemplate(host, frame, {
+      size: 512,
+      colorScheme: 4,
+      smooth: 0,
+      snow: 1,
+    });
+    assert.equal(tpl, `${host}/v2/radar/1619994600/512/{z}/{x}/{y}/4/0_1.png`);
+  });
+
+  test('throws on missing host', () => {
+    assert.throws(() => buildTileUrlTemplate('', frame), /host required/);
+  });
+
+  test('throws on missing frame.path', () => {
+    assert.throws(() => buildTileUrlTemplate(host, null), /frame\.path required/);
+    assert.throws(() => buildTileUrlTemplate(host, {}), /frame\.path required/);
   });
 });
 
