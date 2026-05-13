@@ -67,16 +67,26 @@ const INTERPOLATION_FACTOR = DEFAULT_INTERPOLATION_FACTOR;
 const PLAY_INTERVAL_MS = Math.max(60, Math.floor(FRAME_INTERVAL_MS / INTERPOLATION_FACTOR));
 
 const INITIAL_LAYERS = [
-  { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 80 },
+  { id: RADAR_LAYER_ID, name: 'Historical radar', visible: false, opacity: 80 },
   { id: TREND_LAYER_ID, name: 'Growth / decay', visible: false, opacity: 65 },
   { id: OMEGA_LAYER_ID, name: 'Convergence (850 hPa)', visible: false, opacity: 65 },
   { id: CAPE_LAYER_ID, name: 'CAPE (instability)', visible: false, opacity: 65 },
   { id: THUNDER_LAYER_ID, name: 'Thunderstorm risk', visible: false, opacity: 75 },
   { id: PROBABILITY_LAYER_ID, name: 'Probability of rain (2 h)', visible: false, opacity: 70 },
   { id: CONFIDENCE_LAYER_ID, name: 'Forecast uncertainty', visible: false, opacity: 70 },
-  { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 90 },
+  { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: false, opacity: 90 },
   { id: TOPOLOGY_LAYER_ID, name: 'Cloud topology', visible: true, opacity: 85 },
 ];
+
+/** Cloud-topology display config — driven by the Topology display modal.
+ *  Defaults: labels OFF, tier-coloured envelope+stroke, no simplification. */
+const INITIAL_TOPOLOGY_CONFIG = {
+  modalOpen: false,
+  showLabels: false,
+  renderMode: 'fill+line',    // 'fill' | 'line' | 'fill+line'
+  colorMode: 'tier',          // 'tier' | 'mono'
+  simplifyTolerance: 0,       // 0..12 (tile pixels)
+};
 
 function applyState(snapshot) {
   for (const [key, value] of Object.entries(snapshot)) {
@@ -91,6 +101,7 @@ setValue('layers', INITIAL_LAYERS);
 setValue('playheadIdx', 0);
 setValue('playing', false);
 setValue('vectorColorMode', 'speed');
+setValue('topologyConfig', INITIAL_TOPOLOGY_CONFIG);
 
 // ─── 2. Async pipelines ────────────────────────────────────────────────
 addAsync('radarHistory', async () => {
@@ -754,8 +765,10 @@ watch(['playheadIdx'], () => {
   /* node:coverage enable */
 });
 
-// Render topology to the SVG layer whenever it changes.
-watch(['topology.data'], () => {
+// Render topology to the SVG layer whenever the data OR the display
+// config changes (so toggling labels / render mode / simplification in
+// the modal redraws immediately without recomputing the topology).
+watch(['topology.data', 'topologyConfig'], () => {
   /* node:coverage disable */
   if (!mapHandle) return;
   const top = appState.topology?.data?.[0];
@@ -763,7 +776,14 @@ watch(['topology.data'], () => {
     mapHandle.setTopology([]);
     return;
   }
-  const items = buildTopologyRenderItems(top, { tileSize: TILE_SIZE });
+  const cfg = appState.topologyConfig ?? INITIAL_TOPOLOGY_CONFIG;
+  const items = buildTopologyRenderItems(top, {
+    tileSize: TILE_SIZE,
+    showLabels: cfg.showLabels,
+    renderMode: cfg.renderMode,
+    colorMode: cfg.colorMode,
+    simplifyTolerance: cfg.simplifyTolerance,
+  });
   mapHandle.setTopology(items);
   /* node:coverage enable */
 });
@@ -821,6 +841,30 @@ defineFn('seekPlayhead', (el) => {
 defineFn('setColorMode', (el) => {
   const mode = el.value;
   if (COLOR_MODES.includes(mode)) setValue('vectorColorMode', mode);
+});
+
+// ─── Cloud-topology display modal ──────────────────────────────────────
+function patchTopologyConfig(partial) {
+  setValue('topologyConfig', { ...appState.topologyConfig, ...partial });
+}
+defineFn('openTopologyConfig', () => patchTopologyConfig({ modalOpen: true }));
+defineFn('closeTopologyConfig', () => patchTopologyConfig({ modalOpen: false }));
+defineFn('setTopologyRenderMode', (el) => {
+  if (['fill', 'line', 'fill+line'].includes(el.value)) {
+    patchTopologyConfig({ renderMode: el.value });
+  }
+});
+defineFn('setTopologyColorMode', (el) => {
+  if (['tier', 'mono'].includes(el.value)) {
+    patchTopologyConfig({ colorMode: el.value });
+  }
+});
+defineFn('toggleTopologyLabels', (el) => {
+  patchTopologyConfig({ showLabels: Boolean(el.checked) });
+});
+defineFn('setTopologySimplification', (el) => {
+  const v = Number(el.value);
+  patchTopologyConfig({ simplifyTolerance: Number.isFinite(v) ? v : 0 });
 });
 
 /* node:coverage disable */

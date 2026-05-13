@@ -474,6 +474,9 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
           p.setAttribute('d', item.d);
           p.setAttribute('stroke', item.stroke);
           p.setAttribute('stroke-width', String(item.strokeWidth ?? 1.2));
+          if (item.strokeOpacity != null && item.strokeOpacity < 1) {
+            p.setAttribute('stroke-opacity', String(item.strokeOpacity));
+          }
           p.setAttribute('stroke-linejoin', 'round');
           p.setAttribute('stroke-linecap', 'round');
           p.setAttribute('fill', item.fill ?? 'none');
