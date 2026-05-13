@@ -12,6 +12,8 @@ import {
   DEFAULT_TEMPORAL_DECAY,
 } from './flow.js';
 import { ensembleConfidence } from './confidence.js';
+import { fetchOmegaField, upsampleOmegaField } from './omega.js';
+import { tileBounds } from './vectors.js';
 import { buildArrows, COLOR_MODES } from './vectors.js';
 import { forecast as runForecast } from './advect.js';
 import { interpolateHistory, DEFAULT_INTERPOLATION_FACTOR } from './interpolate.js';
@@ -22,6 +24,15 @@ const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
 const TREND_LAYER_ID = 'trend';
 const CONFIDENCE_LAYER_ID = 'confidence';
+const OMEGA_LAYER_ID = 'omega';
+const TILE_X = 16;
+const TILE_Y = 10;
+const TILE_Z = 5;
+// How aggressively to fold the synoptic omega field into the
+// growth/decay applied during forecast advection. omega is in m/s;
+// at typical magnitudes of ±0.1–0.3 m/s this maps a strong rising
+// column to a ~+0.5 mm/h/frame add-on to the trend.
+const OMEGA_TO_TREND_GAIN = 5;
 const HISTORY_FRAME_COUNT = 12;
 // 512-px tile (RainViewer's higher-detail variant — 3.4× the PNG file
 // size of 256, so real detail not just upscaling) gives us a 512×512
@@ -42,6 +53,7 @@ const PLAY_INTERVAL_MS = Math.max(60, Math.floor(FRAME_INTERVAL_MS / INTERPOLATI
 const INITIAL_LAYERS = [
   { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 80 },
   { id: TREND_LAYER_ID, name: 'Growth / decay', visible: false, opacity: 65 },
+  { id: OMEGA_LAYER_ID, name: 'Convergence (850 hPa)', visible: false, opacity: 65 },
   { id: CONFIDENCE_LAYER_ID, name: 'Forecast uncertainty', visible: false, opacity: 70 },
   { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 90 },
 ];
@@ -92,6 +104,23 @@ function logged(label, fn) {
     }
   };
 }
+
+// Open-Meteo omega ingest — fetched once at boot (synoptic features
+// evolve much slower than radar; refreshing each hour or on user nudge
+// would be the next refinement). 5×5 sample grid → ~25 query points
+// over the tile, bilinearly upsampled to match the radar grid.
+const refetchOmega = addAsync('omega', logged('omega', async () => {
+  /* node:coverage disable */
+  const decoded = appState.radarGrids?.data;
+  if (!decoded || decoded.length === 0) return null;
+  const ref = decoded[0];
+  const bounds = tileBounds(TILE_X, TILE_Y, TILE_Z);
+  const t0 = performance.now();
+  const lowRes = await fetchOmegaField(bounds);
+  const upsampled = upsampleOmegaField(lowRes, ref.width, ref.height);
+  return [{ ...upsampled, lowRes, computeMs: performance.now() - t0 }];
+  /* node:coverage enable */
+}));
 
 const refetchTrend = addAsync('trend', logged('trend', async () => {
   const decoded = appState.radarGrids?.data;
@@ -147,14 +176,19 @@ const refetchForecast = addAsync('forecast', logged('forecast', async () => {
   const decoded = appState.radarGrids?.data;
   if (!flow || !decoded || decoded.length === 0) return null;
   const last = decoded[decoded.length - 1];
-  // Phase-2: apply the per-pixel growth/decay trend during forecast
-  // advection. Skill is good for ~30–60 min lead time; trendStrength
-  // 0.5 dampens far-out forecasts so they don't blow up.
+  // Phase-2: per-pixel growth/decay trend from radar history.
   const trend = appState.trend?.data?.[0] ?? null;
+  // Phase-4 (Story 15): fold synoptic omega into the growth signal.
+  // Negative omega = rising air → cloud growth; we subtract omega *
+  // OMEGA_TO_TREND_GAIN from the trend's grid so rising columns add
+  // positive growth and sinking columns dampen. Combined field stays
+  // at radar resolution; no advectStep API change needed.
+  const omega = appState.omega?.data?.[0] ?? null;
+  const combinedTrend = combineTrendWithOmega(trend, omega, last.width, last.height);
   await Promise.resolve();
   const t0 = performance.now();
   const frames = runForecast(last.grid, flow, FORECAST_FRAME_COUNT, last.width, last.height, {
-    trend,
+    trend: combinedTrend,
     trendStrength: 0.5,
   });
   return {
@@ -165,6 +199,23 @@ const refetchForecast = addAsync('forecast', logged('forecast', async () => {
     computeMs: performance.now() - t0,
   };
 }));
+
+function combineTrendWithOmega(trend, omega, width, height) {
+  if (!trend && !omega) return null;
+  if (!omega) return trend;
+  const len = width * height;
+  if (omega.grid.length !== len) {
+    // Dimension mismatch — fall back to trend alone rather than throwing.
+    return trend;
+  }
+  const grid = new Float32Array(len);
+  const trendGrid = trend?.grid;
+  for (let p = 0; p < len; p++) {
+    const t = trendGrid ? trendGrid[p] : 0;
+    grid[p] = t - omega.grid[p] * OMEGA_TO_TREND_GAIN;
+  }
+  return { width, height, grid };
+}
 
 const refetchFlow = addAsync('flowField', logged('flowField', async () => {
   const decoded = appState.radarGrids?.data;
@@ -298,6 +349,18 @@ computed('confidenceStatus', ['confidence'], (s) => {
   return 'idle';
 });
 
+computed('omegaStatus', ['omega'], (s) => {
+  const o = s.omega;
+  if (!o) return 'idle';
+  if (o.loading) return 'fetching';
+  if (o.error) return `error: ${o.error}`;
+  if (o.data) {
+    const f = o.data[0];
+    return `${f.lowRes.width}×${f.lowRes.height} → ${f.width}×${f.height} in ${f.computeMs.toFixed(0)} ms`;
+  }
+  return 'idle';
+});
+
 // ─── 4. Map handle (lazy) + bridge between state and Leaflet ───────────
 /* node:coverage disable */
 let mapHandle = null;
@@ -319,6 +382,9 @@ function applyLayerToMap(layer) {
   } else if (layer.id === CONFIDENCE_LAYER_ID) {
     mapHandle.setConfidenceVisible(layer.visible);
     mapHandle.setConfidenceOpacity(opacity);
+  } else if (layer.id === OMEGA_LAYER_ID) {
+    mapHandle.setOmegaVisible(layer.visible);
+    mapHandle.setOmegaOpacity(opacity);
   }
 }
 
@@ -364,12 +430,14 @@ watch(['radarGrids.data'], () => {
   if ((appState.radarGrids?.data?.length ?? 0) >= 2) {
     refetchFlow();
     refetchTrend();
+    refetchOmega();
   }
   /* node:coverage enable */
 });
 
-// Re-run forecast + interpolation + confidence when flow OR trend updates.
-watch(['flowField.data', 'trend.data'], () => {
+// Re-run forecast + interpolation + confidence when flow OR trend OR
+// omega updates. Forecast folds all three into its growth signal.
+watch(['flowField.data', 'trend.data', 'omega.data'], () => {
   /* node:coverage disable */
   if (appState.flowField?.data?.smoothed?.[0]) refetchForecast();
   if (appState.flowField?.data?.pairs) refetchInterpolated();
@@ -425,6 +493,15 @@ watch(['confidence.data'], () => {
   const c = appState.confidence?.data?.[0];
   if (!c) return;
   mapHandle.renderConfidence(c.grid, c.width, c.height, `${c.computeMs}`);
+  /* node:coverage enable */
+});
+
+watch(['omega.data'], () => {
+  /* node:coverage disable */
+  if (!mapHandle) return;
+  const o = appState.omega?.data?.[0];
+  if (!o) return;
+  mapHandle.renderOmega(o.grid, o.width, o.height, `${o.computeMs}`);
   /* node:coverage enable */
 });
 
