@@ -91,6 +91,36 @@ export function dbzToRgb(dbz) {
 }
 
 /**
+ * Encode a rain-rate grid (Float32Array, mm/h) back into an RGBA pixel
+ * buffer for canvas rendering. Inverse of decodeRgbaToRainRate. Zero
+ * mm/h → transparent black. Anything else → snapped to the nearest
+ * palette stop (so output looks like RainViewer's own coloured tiles).
+ */
+export function encodeRainRateToRgba(grid, width, height) {
+  const expected = width * height;
+  if (grid.length !== expected) {
+    throw new Error(
+      `encodeRainRateToRgba: grid length ${grid.length} does not match width*height = ${expected}`,
+    );
+  }
+  const out = new Uint8ClampedArray(width * height * 4);
+  for (let p = 0, i = 0; p < grid.length; p++, i += 4) {
+    const mm = grid[p];
+    if (!(mm > 0)) {
+      // RGBA already zero-initialised → transparent black for no-rain
+      continue;
+    }
+    const dbz = rainRateToDbz(mm);
+    const [r, g, b] = dbzToRgb(dbz);
+    out[i] = r;
+    out[i + 1] = g;
+    out[i + 2] = b;
+    out[i + 3] = 255;
+  }
+  return out;
+}
+
+/**
  * Decode an RGBA pixel buffer (Uint8ClampedArray, length = width*height*4)
  * into a Float32Array of rain rates (mm/h). Transparent / sub-threshold
  * pixels become 0 mm/h.
