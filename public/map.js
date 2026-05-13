@@ -16,6 +16,7 @@ import { tileBounds } from './vectors.js';
 import { encodeRainRateToRgba } from './palette.js';
 import { encodeTrendToRgba } from './trend.js';
 import { encodeConfidenceToRgba } from './confidence.js';
+import { encodeOmegaToRgba } from './omega.js';
 
 const LEAFLET_VERSION = '1.9.4';
 const LEAFLET_CSS = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`;
@@ -133,6 +134,19 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   let confidenceOpacity = 0.7;
   let confidenceKey = null;
 
+  // Omega overlay (synoptic 850-hPa vertical-velocity field, green for
+  // rising / purple for sinking). Stacks above trend, below confidence.
+  const omegaCanvas = document.createElement('canvas');
+  omegaCanvas.width = tileSize;
+  omegaCanvas.height = tileSize;
+  const omegaOverlay = L.imageOverlay(transparentPng, latLngBounds, {
+    opacity: 0,
+    interactive: false,
+  }).addTo(map);
+  let omegaVisible = false;
+  let omegaOpacity = 0.65;
+  let omegaKey = null;
+
   // Vectors overlay (SVG arrows).
   const vectorsSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   vectorsSvg.setAttribute('viewBox', `0 0 ${tileSize} ${tileSize}`);
@@ -153,6 +167,9 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   };
   const applyConfidenceOpacity = () => {
     confidenceOverlay.setOpacity(confidenceVisible ? confidenceOpacity : 0);
+  };
+  const applyOmegaOpacity = () => {
+    omegaOverlay.setOpacity(omegaVisible ? omegaOpacity : 0);
   };
   const applyVectorsOpacity = () => {
     vectorsOverlay.setOpacity(vectorsVisible ? vectorsOpacity : 0);
@@ -251,6 +268,33 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     setConfidenceVisible(v) {
       confidenceVisible = Boolean(v);
       applyConfidenceOpacity();
+    },
+    /** Render the synoptic omega field. Same key dedupe pattern. */
+    renderOmega(grid, width, height, key = null) {
+      if (!grid) return;
+      if (key !== null && key === omegaKey) {
+        applyOmegaOpacity();
+        return;
+      }
+      if (width !== omegaCanvas.width || height !== omegaCanvas.height) {
+        omegaCanvas.width = width;
+        omegaCanvas.height = height;
+      }
+      const ctx = omegaCanvas.getContext('2d');
+      const imageData = ctx.createImageData(width, height);
+      imageData.data.set(encodeOmegaToRgba(grid, width, height));
+      ctx.putImageData(imageData, 0, 0);
+      omegaOverlay.setUrl(omegaCanvas.toDataURL('image/png'));
+      omegaKey = key;
+      applyOmegaOpacity();
+    },
+    setOmegaOpacity(v) {
+      omegaOpacity = Math.max(0, Math.min(1, v));
+      applyOmegaOpacity();
+    },
+    setOmegaVisible(v) {
+      omegaVisible = Boolean(v);
+      applyOmegaOpacity();
     },
     setVectors(arrows) {
       while (vectorsSvg.firstChild) vectorsSvg.removeChild(vectorsSvg.firstChild);
