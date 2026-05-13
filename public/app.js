@@ -63,7 +63,7 @@ const INTERPOLATION_FACTOR = DEFAULT_INTERPOLATION_FACTOR;
 const PLAY_INTERVAL_MS = Math.max(60, Math.floor(FRAME_INTERVAL_MS / INTERPOLATION_FACTOR));
 
 const INITIAL_LAYERS = [
-  { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 90 },
+  { id: RADAR_LAYER_ID, name: 'Precipitation heatmap', visible: true, opacity: 90 },
   { id: TREND_LAYER_ID, name: 'Growth / decay', visible: false, opacity: 65 },
   { id: OMEGA_LAYER_ID, name: 'Convergence (850 hPa)', visible: false, opacity: 65 },
   { id: CAPE_LAYER_ID, name: 'CAPE (instability)', visible: false, opacity: 65 },
