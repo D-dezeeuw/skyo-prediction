@@ -28,6 +28,8 @@ import { forecast as runForecast } from './advect.js';
 import { interpolateHistory, DEFAULT_INTERPOLATION_FACTOR } from './interpolate.js';
 import { buildUnifiedFrames, DEFAULT_FRAME_INTERVAL_SEC } from './unify.js';
 import { computeTrend, DEFAULT_TREND_WINDOW } from './trend.js';
+import { buildTopology } from './topology.js';
+import { buildTopologyRenderItems } from './topology-render.js';
 
 const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
@@ -37,6 +39,7 @@ const OMEGA_LAYER_ID = 'omega';
 const CAPE_LAYER_ID = 'cape';
 const THUNDER_LAYER_ID = 'thunderstorm';
 const PROBABILITY_LAYER_ID = 'probability';
+const TOPOLOGY_LAYER_ID = 'topology';
 const TILE_X = 16;
 const TILE_Y = 10;
 const TILE_Z = 5;
@@ -71,6 +74,7 @@ const INITIAL_LAYERS = [
   { id: PROBABILITY_LAYER_ID, name: 'Probability of rain (2 h)', visible: false, opacity: 70 },
   { id: CONFIDENCE_LAYER_ID, name: 'Forecast uncertainty', visible: false, opacity: 70 },
   { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 90 },
+  { id: TOPOLOGY_LAYER_ID, name: 'Cloud topology', visible: true, opacity: 85 },
 ];
 
 function applyState(snapshot) {
@@ -239,6 +243,56 @@ const refetchEnsemble = addAsync('ensemble', logged('ensemble', async () => {
     steps: probabilityGrids.length,
     computeMs: performance.now() - t0,
   }];
+}));
+
+// Per-frame cloud topology — built lazily for the playhead-visible frame.
+// Cache is keyed by frame.time so scrubbing back/forth is instant after the
+// first visit. Cleared whenever any upstream input changes.
+const topologyCache = new Map();
+const refetchTopology = addAsync('topology', logged('topology', async () => {
+  const frames = appState.unifiedFrames;
+  if (!frames || frames.length === 0) return null;
+  const idx = clampIdx(appState.playheadIdx, frames.length);
+  const f = frames[idx];
+  if (!f?.grid) return null;
+  const cached = topologyCache.get(f.time);
+  if (cached) return [cached];
+
+  const decoded = appState.radarGrids?.data;
+  const lastObserved = decoded?.[decoded.length - 1];
+  const trend = appState.trend?.data?.[0] ?? null;
+  const cape = appState.cape?.data?.[0] ?? null;
+  const thunder = appState.thunderstorm?.data?.[0] ?? null;
+  const probability = appState.ensemble?.data?.[0] ?? null;
+  const flow = appState.flowField?.data?.smoothed?.[0] ?? null;
+
+  // Convective mask is computed per-frame (it depends on the frame's
+  // grid, not on a precomputed raster). Keep it cheap — re-deriving on
+  // each frame is fine since we cache the resulting topology.
+  const convective = convectiveMask(f.grid, f.width, f.height);
+
+  // leadMinutes from the latest observed frame's time.
+  const observedAnchor = lastObserved?.time ?? f.time;
+  const leadMinutes = Math.round((f.time - observedAnchor) / 60);
+
+  const topology = buildTopology(f.grid, f.width, f.height, {
+    trend,
+    convective,
+    cape,
+    thunderscore: thunder,
+    probability,
+    flow,
+  }, {
+    frame: {
+      time: new Date(f.time * 1000).toISOString(),
+      kind: f.kind,
+      leadMinutes,
+      intervalMinutes: DEFAULT_FRAME_INTERVAL_SEC / 60,
+      tile: { x: TILE_X, y: TILE_Y, z: TILE_Z },
+    },
+  });
+  topologyCache.set(f.time, topology);
+  return [topology];
 }));
 
 const refetchForecast = addAsync('forecast', logged('forecast', async () => {
@@ -457,6 +511,24 @@ computed('thunderStatus', ['thunderstorm'], (s) => {
   return 'idle';
 });
 
+computed('topologyStatus', ['topology'], (s) => {
+  const t = s.topology;
+  if (!t) return 'idle';
+  if (t.loading) return 'computing';
+  if (t.error) return `error: ${t.error}`;
+  if (t.data) {
+    const top = t.data[0];
+    if (!top) return 'idle';
+    const counts = { severe: 0, thunderstorm: 0 };
+    for (const c of top.clouds) {
+      if (c.severity.tier === 'severe') counts.severe++;
+      if (c.severity.tier === 'thunderstorm') counts.thunderstorm++;
+    }
+    return `${top.clouds.length} clouds (${counts.severe} severe, ${counts.thunderstorm} t-storm)`;
+  }
+  return 'idle';
+});
+
 computed('ensembleStatus', ['ensemble'], (s) => {
   const e = s.ensemble;
   if (!e) return 'idle';
@@ -502,6 +574,9 @@ function applyLayerToMap(layer) {
   } else if (layer.id === PROBABILITY_LAYER_ID) {
     mapHandle.setProbabilityVisible(layer.visible);
     mapHandle.setProbabilityOpacity(opacity);
+  } else if (layer.id === TOPOLOGY_LAYER_ID) {
+    mapHandle.setTopologyVisible(layer.visible);
+    mapHandle.setTopologyOpacity(opacity);
   }
 }
 
@@ -659,6 +734,36 @@ watch(['ensemble.data'], () => {
   const e = appState.ensemble?.data?.[0];
   if (!e) return;
   mapHandle.renderProbability(e.grid, e.width, e.height, `${e.computeMs}`);
+  /* node:coverage enable */
+});
+
+// Topology: bust the per-frame cache whenever any input that feeds it
+// changes, then trigger a recompute for the current playhead frame.
+watch(['radarGrids.data', 'trend.data', 'cape.data', 'thunderstorm.data', 'ensemble.data', 'flowField.data', 'unifiedFrames'], () => {
+  /* node:coverage disable */
+  topologyCache.clear();
+  if (appState.unifiedFrames?.length) refetchTopology();
+  /* node:coverage enable */
+});
+
+// Compute topology for the new playhead frame on every scrub.
+watch(['playheadIdx'], () => {
+  /* node:coverage disable */
+  if (appState.unifiedFrames?.length) refetchTopology();
+  /* node:coverage enable */
+});
+
+// Render topology to the SVG layer whenever it changes.
+watch(['topology.data'], () => {
+  /* node:coverage disable */
+  if (!mapHandle) return;
+  const top = appState.topology?.data?.[0];
+  if (!top) {
+    mapHandle.setTopology([]);
+    return;
+  }
+  const items = buildTopologyRenderItems(top, { tileSize: TILE_SIZE });
+  mapHandle.setTopology(items);
   /* node:coverage enable */
 });
 
