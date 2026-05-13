@@ -170,6 +170,10 @@ computed('unifiedFrames', ['interpolated.data', 'forecast.data', 'flowField.data
     {
       frameIntervalSec: DEFAULT_FRAME_INTERVAL_SEC,
       pairsLength: s.flowField?.data?.pairs?.length ?? 0,
+      // Always reserve forecast slots so the scrubber spans 2h into the
+      // future — even if forecast hasn't computed yet (or errored). Slots
+      // without grids show the last successfully-rendered frame.
+      forecastSlots: FORECAST_FRAME_COUNT,
     },
   ),
 );
@@ -270,7 +274,10 @@ function renderCurrentFrame() {
   if (!frames || frames.length === 0) return;
   const idx = clampIdx(appState.playheadIdx, frames.length);
   const f = frames[idx];
-  // Use time as the dedupe key — same time = same frame, skip re-encode.
+  // Forecast-slot placeholder while forecast hasn't computed yet — leave
+  // the previously-rendered frame visible so scrubbing past T0 doesn't go
+  // black.
+  if (!f.grid) return;
   if (f.time === lastRenderedTime) return;
   mapHandle.renderFrame(f.grid, f.width, f.height, f.time);
   lastRenderedTime = f.time;
