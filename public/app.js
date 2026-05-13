@@ -19,8 +19,13 @@ import { buildUnifiedFrames, DEFAULT_FRAME_INTERVAL_SEC } from './unify.js';
 const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
 const HISTORY_FRAME_COUNT = 12;
-const TILE_SIZE = 256;
-const FLOW_BLOCK_SIZE = 8;
+// 512-px tile (RainViewer's higher-detail variant — 3.4× the PNG file
+// size of 256, so real detail not just upscaling) gives us a 512×512
+// rain-rate grid that stays crisp when the map zooms in to z+1. Block
+// size 16 keeps the flow grid at 32×32 (1024 arrows, same visual
+// density as before) and the same total SSD compute as the old setup.
+const TILE_SIZE = 512;
+const FLOW_BLOCK_SIZE = 16;
 const FLOW_SEARCH_RADIUS = 8;
 const ARROW_INTENSITY_THRESHOLD = 0.05;
 const FORECAST_FRAME_COUNT = 12;

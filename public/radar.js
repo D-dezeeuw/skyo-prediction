@@ -14,7 +14,7 @@ export const RAINVIEWER_MANIFEST_URL =
   'https://api.rainviewer.com/public/weather-maps.json';
 
 const DEFAULT_FRAME_OPTIONS = Object.freeze({
-  size: 256,
+  size: 512,
   zoom: 5,
   x: 16,
   y: 10,

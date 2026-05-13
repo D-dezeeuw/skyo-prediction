@@ -60,11 +60,16 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     L.latLng(bounds.latTop, bounds.lonRight),
   );
 
+  // maxZoom = tileZ + 2 keeps the radar overlay matched to the decoded
+  // grid's effective resolution. At tileZ + 3 and beyond the 512-px
+  // grid starts showing visible pixelation against the base-map tiles
+  // (which keep loading higher-zoom detail). Cap here for visual
+  // consistency between weather data and map data.
   const map = L.map(el, {
     zoomControl: true,
     attributionControl: true,
     minZoom: tileZ,
-    maxZoom: 10,
+    maxZoom: tileZ + 2,
     maxBounds: latLngBounds.pad(0.05),
     maxBoundsViscosity: 1.0,
   });
