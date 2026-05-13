@@ -1,17 +1,19 @@
 /**
  * Browser-only Leaflet wrapper. Mounts a map at a target element and
- * exposes a tiny imperative handle for the rest of the app:
- *   - setHistory(framesMeta): pre-create one tileLayer per radar frame
- *   - showFrame(idx): swap which frame is opaque
- *   - setOpacity(opacity): adjust the radar overlay opacity
- *   - setVisible(visible): toggle the radar overlay
+ * exposes a tiny imperative handle for the rest of the app.
  *
- * Pure helpers (URL construction, frame-index clamping) live elsewhere
- * (radar.js, layers.js) and are unit-tested.
+ * The radar overlay is a SINGLE canvas-backed L.imageOverlay; the
+ * caller hands us a Float32 mm/h grid via renderFrame(grid, w, h) and
+ * we re-encode it via the palette + redraw on demand. One canvas, one
+ * overlay, O(1) DOM. Works equally well for observed RainViewer frames,
+ * interpolated in-between frames, and forecast frames advected from the
+ * latest observation.
+ *
+ * Pure helpers (tile-bounds math) live elsewhere and are unit-tested.
  */
 
-import { buildTileUrlTemplate } from './radar.js';
 import { tileBounds } from './vectors.js';
+import { encodeRainRateToRgba } from './palette.js';
 
 const LEAFLET_VERSION = '1.9.4';
 const LEAFLET_CSS = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`;
@@ -45,13 +47,9 @@ async function ensureLeaflet() {
   return leafletModule;
 }
 
-export async function mountMap(el, { view = DEFAULT_VIEW, host, frameOptions } = {}) {
+export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   const L = await ensureLeaflet();
 
-  // Decode tile bounds drive both the map view AND the vectors overlay
-  // anchor. Locking the map to these bounds is what makes "decoded
-  // grids match the flow field": you can pan/zoom inside the tile but
-  // never out of the area we have decoded grids for.
   const tileX = frameOptions?.x ?? 16;
   const tileY = frameOptions?.y ?? 10;
   const tileZ = frameOptions?.zoom ?? 5;
@@ -72,14 +70,32 @@ export async function mountMap(el, { view = DEFAULT_VIEW, host, frameOptions } =
   });
   map.fitBounds(latLngBounds);
 
-  const baseCfg = BASE_STYLES.dark;
-  L.tileLayer(baseCfg.url, baseCfg).addTo(map);
+  L.tileLayer(BASE_STYLES.dark.url, BASE_STYLES.dark).addTo(map);
 
-  let radarLayers = [];
-  let currentIdx = -1;
-  let visible = true;
-  let opacity = 0.8;
+  // Canvas-backed radar overlay. One canvas, one image overlay; the
+  // overlay's image src is a data URL refreshed on every renderFrame().
+  const radarCanvas = document.createElement('canvas');
+  radarCanvas.width = tileSize;
+  radarCanvas.height = tileSize;
+  const radarCtx = radarCanvas.getContext('2d');
+  const radarImageData = radarCtx.createImageData(tileSize, tileSize);
+  const transparentPng = (() => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 1;
+    return c.toDataURL('image/png');
+  })();
+  const radarOverlay = L.imageOverlay(transparentPng, latLngBounds, {
+    opacity: 0,
+    interactive: false,
+    attribution:
+      'Radar &copy; <a href="https://www.rainviewer.com" target="_blank" rel="noopener">RainViewer</a>',
+  }).addTo(map);
 
+  let radarVisible = true;
+  let radarOpacity = 0.8;
+  let currentFrameKey = null;
+
+  // Vectors overlay (SVG arrows).
   const vectorsSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   vectorsSvg.setAttribute('viewBox', `0 0 ${tileSize} ${tileSize}`);
   vectorsSvg.setAttribute('preserveAspectRatio', 'none');
@@ -91,46 +107,49 @@ export async function mountMap(el, { view = DEFAULT_VIEW, host, frameOptions } =
   let vectorsVisible = true;
   let vectorsOpacity = 0.9;
 
-  const applyOpacity = () => {
-    if (currentIdx < 0 || !radarLayers[currentIdx]) return;
-    radarLayers[currentIdx].setOpacity(visible ? opacity : 0);
+  const applyRadarOpacity = () => {
+    radarOverlay.setOpacity(radarVisible ? radarOpacity : 0);
   };
   const applyVectorsOpacity = () => {
     vectorsOverlay.setOpacity(vectorsVisible ? vectorsOpacity : 0);
   };
 
   return {
-    setHistory(framesMeta) {
-      for (const layer of radarLayers) map.removeLayer(layer);
-      radarLayers = framesMeta.map((frame) =>
-        L.tileLayer(buildTileUrlTemplate(host, frame, frameOptions), {
-          opacity: 0,
-          maxNativeZoom: 7,
-          maxZoom: 12,
-          attribution:
-            'Radar &copy; <a href="https://www.rainviewer.com" target="_blank" rel="noopener">RainViewer</a>',
-        }).addTo(map),
-      );
-      currentIdx = -1;
-    },
-    showFrame(idx) {
-      if (idx === currentIdx) {
-        applyOpacity();
+    /**
+     * Render a Float32 mm/h grid into the radar overlay. `key` is an
+     * opaque identity tag — pass the same key twice in a row and the
+     * second call is a no-op (cheap dedupe for the rAF tick pump).
+     */
+    renderFrame(grid, width, height, key = null) {
+      if (!grid) return;
+      if (key !== null && key === currentFrameKey) {
+        applyRadarOpacity();
         return;
       }
-      if (currentIdx >= 0 && radarLayers[currentIdx]) {
-        radarLayers[currentIdx].setOpacity(0);
+      // Resize the working canvas if the grid dimensions differ from tile size.
+      if (width !== radarCanvas.width || height !== radarCanvas.height) {
+        radarCanvas.width = width;
+        radarCanvas.height = height;
       }
-      currentIdx = idx;
-      applyOpacity();
+      const ctx = radarCanvas.getContext('2d');
+      const imageData = ctx.createImageData(width, height);
+      imageData.data.set(encodeRainRateToRgba(grid, width, height));
+      ctx.putImageData(imageData, 0, 0);
+      radarOverlay.setUrl(radarCanvas.toDataURL('image/png'));
+      currentFrameKey = key;
+      applyRadarOpacity();
+    },
+    clearFrame() {
+      radarOverlay.setUrl(transparentPng);
+      currentFrameKey = null;
     },
     setOpacity(v) {
-      opacity = Math.max(0, Math.min(1, v));
-      applyOpacity();
+      radarOpacity = Math.max(0, Math.min(1, v));
+      applyRadarOpacity();
     },
     setVisible(v) {
-      visible = Boolean(v);
-      applyOpacity();
+      radarVisible = Boolean(v);
+      applyRadarOpacity();
     },
     setVectors(arrows) {
       while (vectorsSvg.firstChild) vectorsSvg.removeChild(vectorsSvg.firstChild);
@@ -155,7 +174,6 @@ export async function mountMap(el, { view = DEFAULT_VIEW, host, frameOptions } =
     },
     destroy() {
       map.remove();
-      radarLayers = [];
     },
   };
 }

@@ -71,7 +71,11 @@
              data-action="input" data-fn="seekPlayhead"
              aria-label="Frame scrubber">
       <span class="frame-meta">
-        <span data-if="frameCount">Frame {{playheadIdx}} / {{frameCount - 1}} · <code>{{currentFrameTime}}</code></span>
+        <span data-if="frameCount">
+          Frame {{playheadIdx}} / {{frameCount - 1}}
+          · <code>{{currentFrameTime}}</code>
+          · <span class="kind-badge" :class="currentFrameKind">{{currentFrameKind}}</span>
+        </span>
         <span data-if="!frameCount" class="muted">Loading frames…</span>
       </span>
     </section>

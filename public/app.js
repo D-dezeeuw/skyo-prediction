@@ -14,31 +14,22 @@ import {
 import { buildArrows, COLOR_MODES } from './vectors.js';
 import { forecast as runForecast } from './advect.js';
 import { interpolateHistory, DEFAULT_INTERPOLATION_FACTOR } from './interpolate.js';
+import { buildUnifiedFrames, DEFAULT_FRAME_INTERVAL_SEC } from './unify.js';
 
 const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
 const HISTORY_FRAME_COUNT = 12;
 const TILE_SIZE = 256;
-// Smaller blocks → denser vector field. 8-px blocks on a 256-px tile
-// give a 32×32 grid (1024 arrows) instead of the previous 16×16 (256).
-// Same total SSD work because per-block cost shrinks at the same rate.
 const FLOW_BLOCK_SIZE = 8;
 const FLOW_SEARCH_RADIUS = 8;
-// Hide arrows over rain-free blocks (mm/h). Block-matching on flat zero
-// returns arbitrary zero motion vectors; rendering them as arrows just
-// adds visual noise. 0.05 mm/h ≈ "trace precipitation" in radar lingo.
 const ARROW_INTENSITY_THRESHOLD = 0.05;
-// 12 forecast frames at 10-minute intervals = 2 hours of nowcast.
 const FORECAST_FRAME_COUNT = 12;
-// In-between frames per observed-frame interval. 4 → 60 fps over 10 min;
-// playback feels smooth instead of slideshow-like.
 const INTERPOLATION_FACTOR = DEFAULT_INTERPOLATION_FACTOR;
+// At INTERPOLATION_FACTOR=4 the playback steps 4× faster than observed
+// frames; drop the per-step interval proportionally so wall-clock speed
+// stays the same (~ a frame every 160ms instead of 650).
+const PLAY_INTERVAL_MS = Math.max(60, Math.floor(FRAME_INTERVAL_MS / INTERPOLATION_FACTOR));
 
-// Layers are plain state objects so the template's data-model can write
-// directly to `appState.layers[i].visible` / `.opacity` — no registry
-// indirection, no derived snapshots, no path-rewrite gymnastics.
-// Opacity is stored as an integer 0–100 to match the range slider's
-// native value; we divide by 100 only when applying to the map.
 const INITIAL_LAYERS = [
   { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 80 },
   { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 90 },
@@ -113,15 +104,6 @@ const refetchFlow = addAsync('flowField', async () => {
   if (!decoded || decoded.length < 2) return null;
   await Promise.resolve();
   const t0 = performance.now();
-  // Three layered noise filters per Story 5.5:
-  //   1. intensityThreshold drops blocks with no signal in either frame
-  //      (prevents the bestMatch lottery on flat-zero areas)
-  //   2. confidenceThreshold drops matches whose SSD/energy is too high
-  //      (the "best" candidate was still a poor fit — coincidence, not
-  //       correspondence)
-  //   3. medianFilter on each pair (in flowFromHistory) replaces outlier
-  //      vectors with the median of their 3×3 neighbourhood — kills
-  //      stray "false motion" arrows that disagree with all neighbours
   const flowOpts = {
     blockSize: FLOW_BLOCK_SIZE,
     searchRadius: FLOW_SEARCH_RADIUS,
@@ -137,16 +119,38 @@ const refetchFlow = addAsync('flowField', async () => {
 // ─── 3. Computed selectors ─────────────────────────────────────────────
 computed('playIcon', ['playing'], (s) => (s.playing ? '⏸' : '▶'));
 
-computed('frameCount', ['radarHistory.data'], (s) =>
-  s.radarHistory?.data?.frames ? s.radarHistory.data.frames.length : 0,
+// Unified frame array: interpolated history (observed + sub-frames) +
+// forecast frames, in chronological order. The scrubber and the map
+// renderer iterate this single list; the .kind tag distinguishes
+// observed vs interpolated vs forecast for the UI.
+computed('unifiedFrames', ['interpolated.data', 'forecast.data', 'flowField.data'], (s) =>
+  buildUnifiedFrames(
+    s.interpolated?.data,
+    s.forecast?.data,
+    {
+      frameIntervalSec: DEFAULT_FRAME_INTERVAL_SEC,
+      pairsLength: s.flowField?.data?.pairs?.length ?? 0,
+    },
+  ),
 );
 
-computed('currentFrameTime', ['radarHistory.data', 'playheadIdx'], (s) => {
-  const frames = s.radarHistory?.data?.frames;
+computed('frameCount', ['unifiedFrames'], (s) => s.unifiedFrames?.length ?? 0);
+
+computed('currentFrameTime', ['unifiedFrames', 'playheadIdx'], (s) => {
+  const frames = s.unifiedFrames;
   if (!frames || frames.length === 0) return '';
   const idx = clampIdx(s.playheadIdx, frames.length);
   return formatFrameTime(frames[idx].time);
 });
+
+computed('currentFrameKind', ['unifiedFrames', 'playheadIdx'], (s) => {
+  const frames = s.unifiedFrames;
+  if (!frames || frames.length === 0) return '';
+  const idx = clampIdx(s.playheadIdx, frames.length);
+  return frames[idx].kind; // 'observed' | 'interpolated' | 'forecast'
+});
+
+computed('observedFrameCount', ['radarGrids.data'], (s) => s.radarGrids?.data?.length ?? 0);
 
 computed('flowStatus', ['flowField'], (s) => {
   const f = s.flowField;
@@ -190,21 +194,8 @@ computed('interpStatus', ['interpolated'], (s) => {
 // ─── 4. Map handle (lazy) + bridge between state and Leaflet ───────────
 /* node:coverage disable */
 let mapHandle = null;
-let installedFrames = null;
 let autoSeekDone = false;
-
-function syncMapWithState() {
-  if (!mapHandle) return;
-  const frames = appState.radarHistory?.data?.frames;
-  if (frames && frames !== installedFrames) {
-    mapHandle.setHistory(frames);
-    installedFrames = frames;
-  }
-  if (frames && frames.length > 0) {
-    mapHandle.showFrame(clampIdx(appState.playheadIdx, frames.length));
-  }
-  for (const layer of appState.layers ?? []) applyLayerToMap(layer);
-}
+let lastRenderedTime = NaN;
 
 function applyLayerToMap(layer) {
   if (!mapHandle || !layer) return;
@@ -218,13 +209,26 @@ function applyLayerToMap(layer) {
   }
 }
 
+function renderCurrentFrame() {
+  if (!mapHandle) return;
+  const frames = appState.unifiedFrames;
+  if (!frames || frames.length === 0) return;
+  const idx = clampIdx(appState.playheadIdx, frames.length);
+  const f = frames[idx];
+  // Use time as the dedupe key — same time = same frame, skip re-encode.
+  if (f.time === lastRenderedTime) return;
+  mapHandle.renderFrame(f.grid, f.width, f.height, f.time);
+  lastRenderedTime = f.time;
+}
+
 mountMap(document.getElementById('map'), {
   view: DEFAULT_VIEW,
-  host: 'https://tilecache.rainviewer.com',
+  frameOptions: { x: 16, y: 10, zoom: 5, size: TILE_SIZE },
 }).then((handle) => {
   mapHandle = handle;
   console.info('[skyo-prediction] map mounted');
-  syncMapWithState();
+  for (const layer of appState.layers ?? []) applyLayerToMap(layer);
+  renderCurrentFrame();
 }).catch((err) => {
   console.error('[skyo-prediction] map mount failed:', err);
 });
@@ -234,11 +238,6 @@ mountMap(document.getElementById('map'), {
 watch(['radarHistory.data'], () => {
   const frames = appState.radarHistory?.data?.frames;
   if (!frames || frames.length === 0) return;
-  if (!autoSeekDone) {
-    setValue('playheadIdx', frames.length - 1);
-    autoSeekDone = true;
-  }
-  syncMapWithState();
   /* node:coverage disable */
   refetchGrids();
   /* node:coverage enable */
@@ -250,8 +249,6 @@ watch(['radarGrids.data'], () => {
   /* node:coverage enable */
 });
 
-// Once flow finishes, advect the latest decoded frame forward N steps
-// and interleave per-pair sub-frames for smooth playback.
 watch(['flowField.data'], () => {
   /* node:coverage disable */
   if (appState.flowField?.data?.smoothed) refetchForecast();
@@ -259,12 +256,27 @@ watch(['flowField.data'], () => {
   /* node:coverage enable */
 });
 
+// Once unified frames materialise for the first time, seek the playhead
+// to the latest observed frame (the boundary between past and forecast).
+watch(['unifiedFrames'], () => {
+  /* node:coverage disable */
+  const frames = appState.unifiedFrames;
+  if (!frames || frames.length === 0) return;
+  if (!autoSeekDone) {
+    let lastObservedIdx = 0;
+    for (let i = frames.length - 1; i >= 0; i--) {
+      if (frames[i].kind === 'observed') { lastObservedIdx = i; break; }
+    }
+    setValue('playheadIdx', lastObservedIdx);
+    autoSeekDone = true;
+  }
+  renderCurrentFrame();
+  /* node:coverage enable */
+});
+
 watch(['playheadIdx'], () => {
   /* node:coverage disable */
-  if (!mapHandle) return;
-  const frames = appState.radarHistory?.data?.frames;
-  if (!frames || frames.length === 0) return;
-  mapHandle.showFrame(clampIdx(appState.playheadIdx, frames.length));
+  renderCurrentFrame();
   /* node:coverage enable */
 });
 
@@ -275,30 +287,27 @@ watch(['layers'], () => {
   /* node:coverage enable */
 });
 
-watch(['flowField.data', 'playheadIdx', 'vectorColorMode'], () => {
+watch(['flowField.data', 'unifiedFrames', 'playheadIdx', 'vectorColorMode'], () => {
   /* node:coverage disable */
   if (!mapHandle) return;
   const data = appState.flowField?.data;
-  if (!data) {
+  const frames = appState.unifiedFrames;
+  if (!data || !frames || frames.length === 0) {
     mapHandle.setVectors([]);
     return;
   }
-  const decoded = appState.radarGrids?.data;
-  const idx = clampIdx(appState.playheadIdx, decoded?.length ?? 0);
-  // Pair i is the motion from frame i → frame i+1, so when *viewing*
-  // frame i we show the pair that *led to* this frame: pairs[i-1].
-  // Frame 0 has no preceding pair, so fall back to the smoothed field.
-  const flow = idx > 0 ? data.pairs[idx - 1] : data.smoothed;
+  const idx = clampIdx(appState.playheadIdx, frames.length);
+  const f = frames[idx];
+  const flow = data.pairs?.[f.pairIdx] ?? data.smoothed;
   if (!flow) {
     mapHandle.setVectors([]);
     return;
   }
-  const frame = decoded?.[idx];
   const arrows = buildArrows(flow, {
     tileSize: TILE_SIZE,
     colorMode: appState.vectorColorMode,
-    radarGrid: frame?.grid ?? null,
-    radarWidth: frame?.width ?? 0,
+    radarGrid: f.grid ?? null,
+    radarWidth: f.width ?? 0,
     intensityThreshold: ARROW_INTENSITY_THRESHOLD,
   });
   mapHandle.setVectors(arrows);
@@ -309,10 +318,10 @@ let playInterval = 0;
 watch(['playing'], () => {
   if (appState.playing && !playInterval) {
     playInterval = setInterval(() => {
-      const frames = appState.radarHistory?.data?.frames;
+      const frames = appState.unifiedFrames;
       if (!frames || frames.length === 0) return;
       setValue('playheadIdx', nextIdx(appState.playheadIdx ?? 0, frames.length));
-    }, FRAME_INTERVAL_MS);
+    }, PLAY_INTERVAL_MS);
   } else if (!appState.playing && playInterval) {
     clearInterval(playInterval);
     playInterval = 0;
@@ -320,10 +329,6 @@ watch(['playing'], () => {
 });
 
 // ─── 6. UI handlers ────────────────────────────────────────────────────
-// Spektrum handler signature: (el, state, delta, value, event).
-// `el` is the DOM element; `value` is the auto-parsed input value
-// (Number-coerced where possible). I had wrongly written
-// `(e) => e.target.value` as if the first arg were the Event.
 defineFn('togglePlay', () => setValue('playing', !appState.playing));
 
 defineFn('seekPlayhead', (el) => {
@@ -331,12 +336,6 @@ defineFn('seekPlayhead', (el) => {
   setValue('playing', false);
   setValue('playheadIdx', Number.isFinite(v) ? Math.floor(v) : 0);
 });
-
-// data-each rows carry the layer id via `:data-layer-id="item.id"` so
-// we can identify which row was toggled without ambient context.
-// (Layer toggle + opacity are wired via data-model="item.visible" and
-// data-model="item.opacity.number" in the template — Spektrum updates
-// appState.layers[i] directly, the layers watcher pushes to the map.)
 
 defineFn('setColorMode', (el) => {
   const mode = el.value;
@@ -347,10 +346,8 @@ if (typeof window !== 'undefined') {
   window.appState = appState;
 }
 
-// ─── 7. Bind DOM (must be last so all defineFn / setValue land first) ──
+// ─── 7. Bind DOM ───────────────────────────────────────────────────────
 bindDOM(document.getElementById('app'));
 
-// ─── 8. Start the rAF tick pump that drains the delta and propagates ──
-//        state changes. Without this, every setValue writes to the
-//        delta but it never commits, so the UI never updates.
+// ─── 8. Start the rAF tick pump ────────────────────────────────────────
 run();

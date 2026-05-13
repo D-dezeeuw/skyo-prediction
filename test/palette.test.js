@@ -8,6 +8,7 @@ import {
   rgbToDbz,
   dbzToRgb,
   decodeRgbaToRainRate,
+  encodeRainRateToRgba,
 } from '../public/palette.js';
 
 describe('PALETTE_STOPS', () => {
@@ -146,5 +147,48 @@ describe('decodeRgbaToRainRate', () => {
     const grid = decodeRgbaToRainRate(buf, 3, 3);
     assert.ok(grid instanceof Float32Array);
     assert.equal(grid.length, 9);
+  });
+});
+
+describe('encodeRainRateToRgba', () => {
+  test('throws on dimension mismatch', () => {
+    assert.throws(
+      () => encodeRainRateToRgba(new Float32Array(5), 2, 2),
+      /does not match/,
+    );
+  });
+
+  test('zero / negative mm/h → transparent black (RGBA = 0,0,0,0)', () => {
+    const grid = new Float32Array([0, -1, 0, 0]);
+    const out = encodeRainRateToRgba(grid, 2, 2);
+    for (let i = 0; i < out.length; i++) assert.equal(out[i], 0);
+  });
+
+  test('positive rain rate → opaque palette colour', () => {
+    // 50 mm/h ≈ 50 dBZ → red palette stop (255, 0, 0)
+    const grid = new Float32Array([50]);
+    const out = encodeRainRateToRgba(grid, 1, 1);
+    assert.equal(out[0], 255);
+    assert.equal(out[1], 0);
+    assert.equal(out[2], 0);
+    assert.equal(out[3], 255); // fully opaque
+  });
+
+  test('roundtrips back through decodeRgbaToRainRate (within palette quantisation)', () => {
+    const grid = new Float32Array([0, 3, 50, 0]);
+    const rgba = encodeRainRateToRgba(grid, 2, 2);
+    const back = decodeRgbaToRainRate(rgba, 2, 2);
+    assert.equal(back[0], 0);
+    assert.equal(back[3], 0);
+    // Mid-band: round-trip lands within palette stop quantisation
+    assert.ok(back[1] > 1 && back[1] < 10, `idx 1: ${back[1]}`);
+    assert.ok(back[2] > 30 && back[2] < 80, `idx 2: ${back[2]}`);
+  });
+
+  test('returns a Uint8ClampedArray of width*height*4 entries', () => {
+    const grid = new Float32Array(9);
+    const out = encodeRainRateToRgba(grid, 3, 3);
+    assert.ok(out instanceof Uint8ClampedArray);
+    assert.equal(out.length, 36);
   });
 });
