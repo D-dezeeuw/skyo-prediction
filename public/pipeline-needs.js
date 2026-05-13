@@ -20,13 +20,14 @@
 /** Stage → array of layer ids that require it (directly or transitively). */
 export const STAGE_DEPENDENCIES = Object.freeze({
   // flowField feeds: motion vectors (direct), interpolated playback for
-  // the radar layer, forecast (advection), ensemble, confidence.
-  flowField:    ['motion-vectors', 'radar-history', 'probability', 'confidence'],
-  // trend goes into the forecast growth/decay (so radar future frames
-  // need it) and into thunderstorm fusion.
-  trend:        ['trend', 'radar-history', 'thunderstorm'],
+  // the past-radar layer, forecast (advection for the future-radar layer),
+  // ensemble, confidence.
+  flowField:    ['motion-vectors', 'radar-history', 'radar-forecast', 'probability', 'confidence'],
+  // trend goes into the forecast growth/decay (so the future-radar layer
+  // needs it) and into thunderstorm fusion.
+  trend:        ['trend', 'radar-forecast', 'thunderstorm'],
   // omega is folded into the forecast trend; otherwise only the omega layer.
-  omega:        ['omega', 'radar-history'],
+  omega:        ['omega', 'radar-forecast'],
   // cape is consumed by thunderstorm fusion + its own layer.
   cape:         ['cape', 'thunderstorm'],
   // thunderstorm score feeds its own layer.
@@ -35,10 +36,10 @@ export const STAGE_DEPENDENCIES = Object.freeze({
   ensemble:     ['probability'],
   // confidence is consumed only by its own layer.
   confidence:   ['confidence'],
-  // interpolated makes the radar scrubber smooth.
+  // interpolated smooths past-scrubbing through observed pairs.
   interpolated: ['radar-history'],
   // forecast extends the radar into the next 2 h.
-  forecast:     ['radar-history'],
+  forecast:     ['radar-forecast'],
 });
 
 /**

@@ -153,11 +153,23 @@ export async function fetchOmegaField(bounds, options = {}) {
  * Different hue family from the radar-history trend so the user can
  * layer both and tell them apart visually.
  */
-export const DEFAULT_OMEGA_SCALE = 0.3;
-export const DEFAULT_OMEGA_MAX_ALPHA = 180;
+/** Saturation point in m/s. Typical synoptic omega is ±0.1–0.2; scale
+ *  0.12 means values at ±0.12 hit full saturation, so a typical day
+ *  reads as a strong tint rather than the previous near-invisible wash. */
+export const DEFAULT_OMEGA_SCALE = 0.12;
+/** Max alpha (0..255) bumped from 180 so the layer reads cleanly over
+ *  the radar heatmap and dark basemap. */
+export const DEFAULT_OMEGA_MAX_ALPHA = 230;
+/** Minimum alpha applied to any non-trivial omega cell, so even small
+ *  values get a visible base tint rather than a near-transparent one. */
+export const DEFAULT_OMEGA_MIN_ALPHA = 70;
 
 export function encodeOmegaToRgba(grid, width, height, options = {}) {
-  const { scale = DEFAULT_OMEGA_SCALE, maxAlpha = DEFAULT_OMEGA_MAX_ALPHA } = options;
+  const {
+    scale = DEFAULT_OMEGA_SCALE,
+    maxAlpha = DEFAULT_OMEGA_MAX_ALPHA,
+    minAlpha = DEFAULT_OMEGA_MIN_ALPHA,
+  } = options;
   if (!(scale > 0)) throw new Error('encodeOmegaToRgba: scale must be positive');
   const expected = width * height;
   if (grid.length !== expected) {
@@ -172,14 +184,17 @@ export function encodeOmegaToRgba(grid, width, height, options = {}) {
     if (t > 1) t = 1;
     if (t < -1) t = -1;
     if (Math.abs(t) < epsilon) continue;
+    // Alpha ramp: minAlpha at |t|=epsilon → maxAlpha at |t|=1
+    const mag = Math.abs(t);
+    const a = minAlpha + (maxAlpha - minAlpha) * mag;
     if (t < 0) {
-      // Rising / growth — green
-      out[i] = 60; out[i + 1] = 200; out[i + 2] = 90;
-      out[i + 3] = -t * maxAlpha;
+      // Rising / growth — vivid mint-green
+      out[i] = 90; out[i + 1] = 230; out[i + 2] = 130;
+      out[i + 3] = a;
     } else {
-      // Sinking / decay — purple
-      out[i] = 160; out[i + 1] = 80; out[i + 2] = 220;
-      out[i + 3] = t * maxAlpha;
+      // Sinking / decay — vivid magenta-purple
+      out[i] = 190; out[i + 1] = 90; out[i + 2] = 240;
+      out[i + 3] = a;
     }
   }
   return out;

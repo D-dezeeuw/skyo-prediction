@@ -51,10 +51,22 @@ export function interpolateHistory(decoded, pairs, factor = DEFAULT_INTERPOLATIO
     // Push the observed start of this pair
     out.push({ ...a, observed: true });
 
-    // Inject factor-1 in-betweens via advection of a along flow at fractional dt
+    // Two-sided morph interpolation: advect `a` FORWARD by t AND advect
+    // `b` BACKWARD by (1 - t), then per-cell max-blend. Pure forward-
+    // advection alone causes the bilinear sampler to bleed away peaks
+    // over multiple sub-steps, leaving "holes" of light-blue in the
+    // centre of moving storm cells. Max-blending preserves peaks from
+    // whichever endpoint still holds them at that moment.
     for (let k = 1; k < factor; k++) {
       const t = k / factor;
-      const grid = advectStep(a.grid, flow, a.width, a.height, { dt: t });
+      const fwd  = advectStep(a.grid, flow, a.width, a.height, { dt:  t });
+      const back = advectStep(b.grid, flow, a.width, a.height, { dt: -(1 - t) });
+      const grid = new Float32Array(a.width * a.height);
+      for (let p = 0; p < grid.length; p++) {
+        const fv = fwd[p];
+        const bv = back[p];
+        grid[p] = fv > bv ? fv : bv;
+      }
       out.push({
         time: a.time + dtNext * t,
         grid,

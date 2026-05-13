@@ -13,7 +13,13 @@
  */
 
 import { tileBounds } from './vectors.js';
-import { encodeRainRateToRgba } from './palette.js';
+import { encodeRainRateToRgba, bilinearUpsample } from './palette.js';
+
+/** Factor by which the radar grid is bilinearly upsampled before
+ *  encoding to the canvas. 2× turns a 512² source grid into a
+ *  1024² canvas, so the PNG → Leaflet image-overlay path doesn't
+ *  show source pixel structure at close map zooms. */
+const RADAR_UPSAMPLE_FACTOR = 2;
 import { encodeTrendToRgba } from './trend.js';
 import { encodeConfidenceToRgba } from './confidence.js';
 import { encodeOmegaToRgba } from './omega.js';
@@ -237,14 +243,22 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
         applyRadarOpacity();
         return;
       }
-      // Resize the working canvas if the grid dimensions differ from tile size.
-      if (width !== radarCanvas.width || height !== radarCanvas.height) {
-        radarCanvas.width = width;
-        radarCanvas.height = height;
+      // 2× bilinear upsample before encoding gives the canvas 4× more
+      // pixels than the source grid, so the PNG → image-overlay → CSS-
+      // scaled rendering doesn't show source pixel structure at close
+      // map zooms. ~10 ms for a 512²→1024² upsample at full alpha.
+      const W = width * RADAR_UPSAMPLE_FACTOR;
+      const H = height * RADAR_UPSAMPLE_FACTOR;
+      const upsampled = RADAR_UPSAMPLE_FACTOR === 1
+        ? grid
+        : bilinearUpsample(grid, width, height, RADAR_UPSAMPLE_FACTOR);
+      if (W !== radarCanvas.width || H !== radarCanvas.height) {
+        radarCanvas.width = W;
+        radarCanvas.height = H;
       }
       const ctx = radarCanvas.getContext('2d');
-      const imageData = ctx.createImageData(width, height);
-      imageData.data.set(encodeRainRateToRgba(grid, width, height));
+      const imageData = ctx.createImageData(W, H);
+      imageData.data.set(encodeRainRateToRgba(upsampled, W, H));
       ctx.putImageData(imageData, 0, 0);
       radarOverlay.setUrl(radarCanvas.toDataURL('image/png'));
       currentFrameKey = key;
