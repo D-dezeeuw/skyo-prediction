@@ -4,6 +4,8 @@ import { buildTopology } from '../public/topology.js';
 import {
   DEFAULT_TILE_SIZE,
   DEFAULT_LABEL_TIER_THRESHOLD,
+  RENDER_MODES,
+  COLOR_MODES,
   TIER_PALETTE,
   buildTopologyRenderItems,
 } from '../public/topology-render.js';
@@ -29,6 +31,11 @@ describe('exports', () => {
     for (const tier of ['light', 'moderate', 'heavy', 'severe', 'thunderstorm']) {
       assert.ok(TIER_PALETTE[tier], `missing palette for ${tier}`);
     }
+  });
+
+  test('render and color mode enums', () => {
+    assert.deepEqual([...RENDER_MODES], ['fill', 'line', 'fill+line']);
+    assert.deepEqual([...COLOR_MODES], ['tier', 'mono']);
   });
 
   test('thunderstorm palette is dashed; others are not', () => {
@@ -108,15 +115,21 @@ describe('buildTopologyRenderItems', () => {
     assert.ok(maxCoord > 200 && maxCoord < 350, `maxCoord=${maxCoord}`);
   });
 
-  test('emits a label for tiers ≥ heavy by default', () => {
+  test('labels are off by default (showLabels=false)', () => {
     const heavy = buildTopologyRenderItems(samplePeak(25));
+    const labels = heavy.filter((i) => i.type === 'label');
+    assert.equal(labels.length, 0);
+  });
+
+  test('showLabels=true emits a label for tiers ≥ heavy', () => {
+    const heavy = buildTopologyRenderItems(samplePeak(25), { showLabels: true });
     const labels = heavy.filter((i) => i.type === 'label');
     assert.equal(labels.length, 1);
     assert.equal(labels[0].text, 'HEAVY');
   });
 
-  test('does not emit a label for tiers < heavy', () => {
-    const moderate = buildTopologyRenderItems(samplePeak(5));
+  test('showLabels=true does not emit a label for tiers < heavy', () => {
+    const moderate = buildTopologyRenderItems(samplePeak(5), { showLabels: true });
     const labels = moderate.filter((i) => i.type === 'label');
     assert.equal(labels.length, 0);
   });
@@ -128,7 +141,10 @@ describe('buildTopologyRenderItems', () => {
   });
 
   test('labelTierMin can be lowered to include moderate', () => {
-    const items = buildTopologyRenderItems(samplePeak(5), { labelTierMin: 'moderate' });
+    const items = buildTopologyRenderItems(samplePeak(5), {
+      showLabels: true,
+      labelTierMin: 'moderate',
+    });
     const labels = items.filter((i) => i.type === 'label');
     assert.equal(labels.length, 1);
     assert.equal(labels[0].text, 'MODERATE');
@@ -136,11 +152,96 @@ describe('buildTopologyRenderItems', () => {
 
   test('label coordinates are projected to tile-px', () => {
     const t = samplePeak(25);
-    const items = buildTopologyRenderItems(t, { tileSize: 512 });
+    const items = buildTopologyRenderItems(t, { tileSize: 512, showLabels: true });
     const label = items.find((i) => i.type === 'label');
     // Centroid at grid (7, 7) → tile (7 * 512/19, 7 * 512/19) ≈ (188.6, 188.6)
     assert.ok(Math.abs(label.x - 188.6) < 1, `label.x=${label.x}`);
     assert.ok(Math.abs(label.y - 188.6) < 1, `label.y=${label.y}`);
+  });
+
+  test('renderMode "line" → no fill on any polygon', () => {
+    const items = buildTopologyRenderItems(samplePeak(25), { renderMode: 'line' });
+    const polys = items.filter((i) => i.type === 'polygon');
+    for (const p of polys) {
+      assert.equal(p.fill, 'none', `${p.kind} has fill ${p.fill}`);
+    }
+  });
+
+  test('renderMode "fill" → no stroke (strokeWidth 0) on any polygon', () => {
+    const items = buildTopologyRenderItems(samplePeak(25), { renderMode: 'fill' });
+    const polys = items.filter((i) => i.type === 'polygon');
+    for (const p of polys) {
+      assert.equal(p.strokeWidth, 0);
+      assert.equal(p.stroke, 'none');
+    }
+  });
+
+  test('renderMode "fill+line" (default) → envelope has both, cores have line only', () => {
+    const items = buildTopologyRenderItems(samplePeak(25));
+    const env = items.find((i) => i.kind === 'envelope');
+    const core = items.find((i) => i.kind === 'core');
+    assert.ok(env.fill && env.fill !== 'none');
+    assert.ok(env.strokeWidth > 0);
+    assert.equal(core.fill, 'none');
+    assert.ok(core.strokeWidth > 0);
+  });
+
+  test('unknown renderMode falls back to fill+line', () => {
+    const items = buildTopologyRenderItems(samplePeak(25), { renderMode: 'rainbow' });
+    const env = items.find((i) => i.kind === 'envelope');
+    assert.ok(env.fill && env.fill !== 'none');
+  });
+
+  test('colorMode "mono" → all polygons render white, opacity scales with score', () => {
+    const lo = buildTopologyRenderItems(samplePeak(5),  { colorMode: 'mono' });
+    const hi = buildTopologyRenderItems(samplePeak(50), { colorMode: 'mono' });
+    const loEnv = lo.find((i) => i.kind === 'envelope');
+    const hiEnv = hi.find((i) => i.kind === 'envelope');
+    // Both white
+    assert.match(loEnv.fill, /hsl\(0,\s*0%,\s*100%\)/);
+    assert.match(hiEnv.fill, /hsl\(0,\s*0%,\s*100%\)/);
+    // Higher severity → higher fill opacity
+    assert.ok(hiEnv.fillOpacity > loEnv.fillOpacity);
+    // And higher stroke opacity
+    assert.ok(hiEnv.strokeOpacity > loEnv.strokeOpacity);
+  });
+
+  test('unknown colorMode falls back to tier', () => {
+    const items = buildTopologyRenderItems(samplePeak(25), { colorMode: 'plaid' });
+    const env = items.find((i) => i.kind === 'envelope');
+    assert.equal(env.stroke, TIER_PALETTE.heavy.stroke);
+  });
+
+  test('simplifyTolerance > 0 reduces polygon vertex count', () => {
+    // A bigger blob → more vertices in the envelope. With aggressive
+    // simplification the count drops noticeably.
+    const grid = new Float32Array(40 * 40);
+    for (let y = 8; y <= 31; y++) for (let x = 8; x <= 31; x++) grid[y * 40 + x] = 25;
+    const t = buildTopology(grid, 40, 40, {}, { frame: { tile: { x: 16, y: 10, z: 5 } } });
+    const full = buildTopologyRenderItems(t, { tileSize: 512, simplifyTolerance: 0 });
+    const simp = buildTopologyRenderItems(t, { tileSize: 512, simplifyTolerance: 8 });
+    const fullEnv = full.find((i) => i.kind === 'envelope');
+    const simpEnv = simp.find((i) => i.kind === 'envelope');
+    const countL = (d) => (d.match(/L /g) || []).length;
+    assert.ok(countL(simpEnv.d) < countL(fullEnv.d), `simplified ${countL(simpEnv.d)} >= full ${countL(fullEnv.d)}`);
+  });
+
+  test('simplifyTolerance is a no-op when polygon already has ≤ 3 vertices', () => {
+    const t = {
+      frame: { grid: { width: 10, height: 10 } },
+      thresholds: { rainMmPerHour: [0.5] },
+      clouds: [{
+        id: 'c001',
+        severity: { tier: 'light', score: 0.1, drivers: {} },
+        centroid: [5, 5],
+        levels: [{ thresholdMmPerHour: 0.5, polygons: [[[1, 1], [3, 1], [3, 3]]] }],
+      }],
+    };
+    const items = buildTopologyRenderItems(t, { simplifyTolerance: 100 });
+    const env = items.find((i) => i.kind === 'envelope');
+    // Path still has its 3 segments — simplification skipped tiny polygons
+    const countL = (env.d.match(/L /g) || []).length;
+    assert.ok(countL >= 2, `expected at least 2 L segments, got ${countL}`);
   });
 
   test('falls back gracefully when cloud has unknown tier', () => {
