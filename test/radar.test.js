@@ -142,7 +142,7 @@ describe('buildFrameUrl', () => {
 
   test('builds the canonical RainViewer tile URL with defaults', () => {
     const url = buildFrameUrl(host, frame);
-    assert.equal(url, `${host}/v2/radar/1619994600/256/5/16/10/2/1_0.png`);
+    assert.equal(url, `${host}/v2/radar/1619994600/512/5/16/10/2/1_0.png`);
   });
 
   test('respects overridden options', () => {
@@ -160,7 +160,7 @@ describe('buildFrameUrl', () => {
 
   test('partial option overrides preserve other defaults', () => {
     const url = buildFrameUrl(host, frame, { zoom: 7 });
-    assert.equal(url, `${host}/v2/radar/1619994600/256/7/16/10/2/1_0.png`);
+    assert.equal(url, `${host}/v2/radar/1619994600/512/7/16/10/2/1_0.png`);
   });
 
   test('throws on missing host', () => {
@@ -180,7 +180,7 @@ describe('buildTileUrlTemplate', () => {
 
   test('produces a Leaflet-compatible {z}/{x}/{y} template with defaults', () => {
     const tpl = buildTileUrlTemplate(host, frame);
-    assert.equal(tpl, `${host}/v2/radar/1619994600/256/{z}/{x}/{y}/2/1_0.png`);
+    assert.equal(tpl, `${host}/v2/radar/1619994600/512/{z}/{x}/{y}/2/1_0.png`);
   });
 
   test('respects size, colorScheme, smooth, snow overrides', () => {
