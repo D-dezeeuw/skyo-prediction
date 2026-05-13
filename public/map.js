@@ -311,7 +311,17 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     },
     /** Render the forecast-disagreement field. Same key dedupe pattern. */
     renderConfidence(grid, width, height, key = null) {
-      if (!grid) return;
+      if (!grid) {
+        // Clear: callers pass null/undefined when the playhead is on a
+        // non-forecast slot (the past) so the layer doesn't bleed stale
+        // values into observed frames.
+        if (confidenceKey !== null) {
+          confidenceOverlay.setUrl(transparentPng);
+          confidenceKey = null;
+        }
+        applyConfidenceOpacity();
+        return;
+      }
       if (key !== null && key === confidenceKey) {
         applyConfidenceOpacity();
         return;
@@ -416,7 +426,17 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
       applyThunderOpacity();
     },
     renderProbability(grid, width, height, key = null) {
-      if (!grid) return;
+      if (!grid) {
+        // Clear when scrubbing past the forecast window — keeps the
+        // probability layer aligned with the playhead instead of
+        // bleeding the last-rendered frame into observed slots.
+        if (probabilityKey !== null) {
+          probabilityOverlay.setUrl(transparentPng);
+          probabilityKey = null;
+        }
+        applyProbabilityOpacity();
+        return;
+      }
       if (key !== null && key === probabilityKey) {
         applyProbabilityOpacity();
         return;

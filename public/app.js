@@ -11,7 +11,7 @@ import {
   DEFAULT_FLOW_CONFIDENCE_THRESHOLD,
   DEFAULT_TEMPORAL_DECAY,
 } from './flow.js';
-import { ensembleConfidence } from './confidence.js';
+import { ensembleConfidencePerStep } from './confidence.js';
 import { fetchOmegaField, upsampleOmegaField } from './omega.js';
 import { fetchCapeField, upsampleCapeField } from './cape.js';
 import { convectiveMask, thunderstormScore } from './thunderstorm.js';
@@ -227,8 +227,14 @@ const refetchConfidence = addAsync('confidence', logged('confidence', async () =
   const conservative = smoothFlowsWeighted(pairs, { decay: 0.4 });
   const framesA = runForecast(last.grid, defaultFlow, FORECAST_FRAME_COUNT, last.width, last.height);
   const framesB = runForecast(last.grid, conservative, FORECAST_FRAME_COUNT, last.width, last.height);
-  const field = ensembleConfidence(framesA, framesB, last.width, last.height);
-  return [{ ...field, computeMs: performance.now() - t0 }];
+  const perStep = ensembleConfidencePerStep(framesA, framesB, last.width, last.height);
+  return [{
+    width: last.width,
+    height: last.height,
+    perStep,
+    steps: perStep.length,
+    computeMs: performance.now() - t0,
+  }];
 }));
 
 // Phase 6: stochastic ensemble. Perturb the smoothed flow N ways
@@ -249,9 +255,15 @@ const refetchEnsemble = addAsync('ensemble', logged('ensemble', async () => {
     return runForecast(last.grid, perturbed, FORECAST_FRAME_COUNT, last.width, last.height);
   });
   const probabilityGrids = computeProbabilityFields(forecasts, last.width, last.height);
+  // Topology severity reads the max over the horizon ({ width, height,
+  // grid }), while the probability layer animates frame-by-frame through
+  // perStep. Both consumers get what they need from the same compute.
   const max = maxProbabilityField(probabilityGrids, last.width, last.height);
   return [{
-    ...max,
+    width: last.width,
+    height: last.height,
+    grid: max.grid,
+    perStep: probabilityGrids,
     members: perturbations.length,
     steps: probabilityGrids.length,
     computeMs: performance.now() - t0,
@@ -491,7 +503,7 @@ computed('confidenceStatus', ['confidence'], (s) => {
   if (c.error) return `error: ${c.error}`;
   if (c.data) {
     const f = c.data[0];
-    return `${f.width}×${f.height} in ${f.computeMs.toFixed(0)} ms`;
+    return `${f.width}×${f.height} × ${f.steps} steps in ${f.computeMs.toFixed(0)} ms`;
   }
   return 'idle';
 });
@@ -726,12 +738,36 @@ watch(['trend.data'], () => {
   /* node:coverage enable */
 });
 
-watch(['confidence.data'], () => {
+// Confidence + probability layers animate with the playhead: for forecast
+// slots, render the per-step grid for that slot's lead-time index. For
+// observed / interpolated slots (the past), clear the overlay — these
+// signals describe future uncertainty, not past observations.
+function forecastStepForPlayhead() {
+  const frames = appState.unifiedFrames;
+  if (!frames || frames.length === 0) return -1;
+  const idx = clampIdx(appState.playheadIdx, frames.length);
+  const f = frames[idx];
+  if (!f || f.kind !== 'forecast') return -1;
+  const firstForecastIdx = frames.findIndex((fr) => fr.kind === 'forecast');
+  if (firstForecastIdx < 0) return -1;
+  return idx - firstForecastIdx;
+}
+
+watch(['confidence.data', 'unifiedFrames', 'playheadIdx'], () => {
   /* node:coverage disable */
   if (!mapHandle) return;
   const c = appState.confidence?.data?.[0];
-  if (!c) return;
-  mapHandle.renderConfidence(c.grid, c.width, c.height, `${c.computeMs}`);
+  if (!c || !Array.isArray(c.perStep) || c.perStep.length === 0) {
+    mapHandle.renderConfidence(null, 0, 0, 'clear');
+    return;
+  }
+  const step = forecastStepForPlayhead();
+  if (step < 0 || step >= c.perStep.length) {
+    mapHandle.renderConfidence(null, 0, 0, 'clear');
+    return;
+  }
+  const g = c.perStep[step];
+  mapHandle.renderConfidence(g, c.width, c.height, `c:${c.computeMs}:${step}`);
   /* node:coverage enable */
 });
 
@@ -762,12 +798,21 @@ watch(['thunderstorm.data'], () => {
   /* node:coverage enable */
 });
 
-watch(['ensemble.data'], () => {
+watch(['ensemble.data', 'unifiedFrames', 'playheadIdx'], () => {
   /* node:coverage disable */
   if (!mapHandle) return;
   const e = appState.ensemble?.data?.[0];
-  if (!e) return;
-  mapHandle.renderProbability(e.grid, e.width, e.height, `${e.computeMs}`);
+  if (!e || !Array.isArray(e.perStep) || e.perStep.length === 0) {
+    mapHandle.renderProbability(null, 0, 0, 'clear');
+    return;
+  }
+  const step = forecastStepForPlayhead();
+  if (step < 0 || step >= e.perStep.length) {
+    mapHandle.renderProbability(null, 0, 0, 'clear');
+    return;
+  }
+  const g = e.perStep[step];
+  mapHandle.renderProbability(g, e.width, e.height, `e:${e.computeMs}:${step}`);
   /* node:coverage enable */
 });
 
