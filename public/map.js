@@ -116,6 +116,16 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   let radarOpacity = 0.8;
   let currentFrameKey = null;
 
+  // RainViewer source tile overlay — raw tiles straight from their CDN,
+  // no decode, no smoothing, no upsampling. Toggled by the
+  // "Precipitation (source)" layer. The URL template is rebuilt
+  // on every frame swap; we recreate the Leaflet tileLayer each time
+  // since L.tileLayer doesn't expose a setUrl that re-fetches.
+  let sourceTileLayer = null;
+  let sourceVisible = false;
+  let sourceOpacity = 0.85;
+  let sourceCurrentUrl = null;
+
   // Trend overlay (diverging-colour heatmap). Same canvas-render-to-
   // data-URL approach as the radar; lives between radar and vectors
   // in z-order so the rain still reads through.
@@ -229,6 +239,27 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   };
   const applyVectorsOpacity = () => {
     vectorsOverlay.setOpacity(vectorsVisible ? vectorsOpacity : 0);
+  };
+  const applySourceOpacity = () => {
+    if (sourceTileLayer) sourceTileLayer.setOpacity(sourceVisible ? sourceOpacity : 0);
+  };
+  const replaceSourceTileLayer = (urlTemplate) => {
+    if (sourceTileLayer) {
+      map.removeLayer(sourceTileLayer);
+      sourceTileLayer = null;
+    }
+    if (urlTemplate) {
+      sourceTileLayer = L.tileLayer(urlTemplate, {
+        attribution: 'Radar &copy; <a href="https://www.rainviewer.com" target="_blank" rel="noopener">RainViewer</a>',
+        opacity: sourceVisible ? sourceOpacity : 0,
+        bounds: latLngBounds,
+        // RainViewer tile size is configurable per the template; we use
+        // 256 here so any zoom looks crisp without us prescaling.
+        tileSize: 256,
+        crossOrigin: true,
+      }).addTo(map);
+    }
+    sourceCurrentUrl = urlTemplate;
   };
 
   return {
@@ -457,6 +488,25 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     setProbabilityVisible(v) {
       probabilityVisible = Boolean(v);
       applyProbabilityOpacity();
+    },
+    /** Point the source-tile layer at a new URL template (or null to
+     *  clear it — used when scrubbing past frames RainViewer doesn't
+     *  publish, e.g. forecast slots). Same URL twice in a row is a no-op. */
+    setSourceFrame(urlTemplate) {
+      if (urlTemplate === sourceCurrentUrl) {
+        applySourceOpacity();
+        return;
+      }
+      replaceSourceTileLayer(urlTemplate);
+      applySourceOpacity();
+    },
+    setSourceOpacity(v) {
+      sourceOpacity = Math.max(0, Math.min(1, v));
+      applySourceOpacity();
+    },
+    setSourceVisible(v) {
+      sourceVisible = Boolean(v);
+      applySourceOpacity();
     },
     setVectors(arrows) {
       while (vectorsSvg.firstChild) vectorsSvg.removeChild(vectorsSvg.firstChild);
