@@ -19,7 +19,6 @@ import {
   buildPerturbations,
   perturbFlow,
   computeProbabilityFields,
-  maxProbabilityField,
   DEFAULT_ENSEMBLE_SIZE,
 } from './ensemble.js';
 import { tileBounds } from './vectors.js';
@@ -28,9 +27,6 @@ import { forecast as runForecast } from './advect.js';
 import { interpolateHistory, DEFAULT_INTERPOLATION_FACTOR } from './interpolate.js';
 import { buildUnifiedFrames, DEFAULT_FRAME_INTERVAL_SEC } from './unify.js';
 import { computeTrend, DEFAULT_TREND_WINDOW } from './trend.js';
-import { buildTopology } from './topology.js';
-import { buildTopologyRenderItems } from './topology-render.js';
-import { prepareTopologyExport, prepareTopologyTimelineExport } from './topology-export.js';
 import { computeStageNeeds } from './pipeline-needs.js';
 
 const RADAR_LAYER_ID = 'radar-history';
@@ -41,7 +37,6 @@ const OMEGA_LAYER_ID = 'omega';
 const CAPE_LAYER_ID = 'cape';
 const THUNDER_LAYER_ID = 'thunderstorm';
 const PROBABILITY_LAYER_ID = 'probability';
-const TOPOLOGY_LAYER_ID = 'topology';
 const TILE_X = 16;
 const TILE_Y = 10;
 const TILE_Z = 5;
@@ -76,18 +71,7 @@ const INITIAL_LAYERS = [
   { id: PROBABILITY_LAYER_ID, name: 'Probability of rain (2 h)', visible: false, opacity: 70 },
   { id: CONFIDENCE_LAYER_ID, name: 'Forecast uncertainty', visible: false, opacity: 70 },
   { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: false, opacity: 90 },
-  { id: TOPOLOGY_LAYER_ID, name: 'Cloud topology', visible: false, opacity: 85 },
 ];
-
-/** Cloud-topology display config — driven by the Topology display modal.
- *  Defaults: labels OFF, tier-coloured envelope+stroke, no simplification. */
-const INITIAL_TOPOLOGY_CONFIG = {
-  modalOpen: false,
-  showLabels: false,
-  renderMode: 'fill+line',    // 'fill' | 'line' | 'fill+line'
-  colorMode: 'tier',          // 'tier' | 'mono'
-  simplifyTolerance: 0,       // 0..12 (tile pixels)
-};
 
 function applyState(snapshot) {
   for (const [key, value] of Object.entries(snapshot)) {
@@ -102,7 +86,6 @@ setValue('layers', INITIAL_LAYERS);
 setValue('playheadIdx', 0);
 setValue('playing', false);
 setValue('vectorColorMode', 'speed');
-setValue('topologyConfig', INITIAL_TOPOLOGY_CONFIG);
 
 // ─── 2. Async pipelines ────────────────────────────────────────────────
 addAsync('radarHistory', async () => {
@@ -255,72 +238,14 @@ const refetchEnsemble = addAsync('ensemble', logged('ensemble', async () => {
     return runForecast(last.grid, perturbed, FORECAST_FRAME_COUNT, last.width, last.height);
   });
   const probabilityGrids = computeProbabilityFields(forecasts, last.width, last.height);
-  // Topology severity reads the max over the horizon ({ width, height,
-  // grid }), while the probability layer animates frame-by-frame through
-  // perStep. Both consumers get what they need from the same compute.
-  const max = maxProbabilityField(probabilityGrids, last.width, last.height);
   return [{
     width: last.width,
     height: last.height,
-    grid: max.grid,
     perStep: probabilityGrids,
     members: perturbations.length,
     steps: probabilityGrids.length,
     computeMs: performance.now() - t0,
   }];
-}));
-
-// Per-frame cloud topology — built lazily for the playhead-visible frame.
-// Cache is keyed by frame.time so scrubbing back/forth is instant after the
-// first visit. Cleared whenever any upstream input changes.
-const topologyCache = new Map();
-
-function currentTopologySupporting() {
-  return {
-    trend: appState.trend?.data?.[0] ?? null,
-    cape: appState.cape?.data?.[0] ?? null,
-    thunderscore: appState.thunderstorm?.data?.[0] ?? null,
-    probability: appState.ensemble?.data?.[0] ?? null,
-    flow: appState.flowField?.data?.smoothed?.[0] ?? null,
-  };
-}
-
-function ensureTopologyForFrame(f) {
-  if (!f?.grid) return null;
-  const hit = topologyCache.get(f.time);
-  if (hit) return hit;
-  const decoded = appState.radarGrids?.data;
-  const lastObserved = decoded?.[decoded.length - 1];
-  const supporting = currentTopologySupporting();
-  // Convective mask depends only on the frame's grid; cheap to re-derive
-  // and folded into the cached topology, so no separate cache needed.
-  const convective = convectiveMask(f.grid, f.width, f.height);
-  const observedAnchor = lastObserved?.time ?? f.time;
-  const leadMinutes = Math.round((f.time - observedAnchor) / 60);
-  const topology = buildTopology(f.grid, f.width, f.height, {
-    ...supporting,
-    convective,
-  }, {
-    frame: {
-      time: new Date(f.time * 1000).toISOString(),
-      kind: f.kind,
-      leadMinutes,
-      intervalMinutes: DEFAULT_FRAME_INTERVAL_SEC / 60,
-      tile: { x: TILE_X, y: TILE_Y, z: TILE_Z },
-    },
-  });
-  topologyCache.set(f.time, topology);
-  return topology;
-}
-
-const refetchTopology = addAsync('topology', logged('topology', async () => {
-  const frames = appState.unifiedFrames;
-  if (!frames || frames.length === 0) return null;
-  const idx = clampIdx(appState.playheadIdx, frames.length);
-  const f = frames[idx];
-  const topology = ensureTopologyForFrame(f);
-  if (!topology) return null;
-  return [topology];
 }));
 
 const refetchForecast = addAsync('forecast', logged('forecast', async () => {
@@ -544,24 +469,6 @@ computed('thunderStatus', ['thunderstorm'], (s) => {
   return 'idle';
 });
 
-computed('topologyStatus', ['topology'], (s) => {
-  const t = s.topology;
-  if (!t) return 'idle';
-  if (t.loading) return 'computing';
-  if (t.error) return `error: ${t.error}`;
-  if (t.data) {
-    const top = t.data[0];
-    if (!top) return 'idle';
-    const counts = { severe: 0, thunderstorm: 0 };
-    for (const c of top.clouds) {
-      if (c.severity.tier === 'severe') counts.severe++;
-      if (c.severity.tier === 'thunderstorm') counts.thunderstorm++;
-    }
-    return `${top.clouds.length} clouds (${counts.severe} severe, ${counts.thunderstorm} t-storm)`;
-  }
-  return 'idle';
-});
-
 computed('ensembleStatus', ['ensemble'], (s) => {
   const e = s.ensemble;
   if (!e) return 'idle';
@@ -607,9 +514,6 @@ function applyLayerToMap(layer) {
   } else if (layer.id === PROBABILITY_LAYER_ID) {
     mapHandle.setProbabilityVisible(layer.visible);
     mapHandle.setProbabilityOpacity(opacity);
-  } else if (layer.id === TOPOLOGY_LAYER_ID) {
-    mapHandle.setTopologyVisible(layer.visible);
-    mapHandle.setTopologyOpacity(opacity);
   }
 }
 
@@ -816,102 +720,6 @@ watch(['ensemble.data', 'unifiedFrames', 'playheadIdx'], () => {
   /* node:coverage enable */
 });
 
-// Topology: bust the per-frame cache whenever any input that feeds it
-// changes, then trigger a recompute for the current playhead frame AND
-// kick off an idle pre-warm so subsequent scrubs are instant. Only runs
-// when the Cloud topology layer is visible — otherwise we'd churn
-// through ~48 builds for nothing.
-watch(['radarGrids.data', 'trend.data', 'cape.data', 'thunderstorm.data', 'ensemble.data', 'flowField.data', 'unifiedFrames', 'stageNeeds'], () => {
-  /* node:coverage disable */
-  topologyCache.clear();
-  if (!appState.stageNeeds?.topology) {
-    cancelTopologyPrewarm();
-    return;
-  }
-  if (appState.unifiedFrames?.length) {
-    refetchTopology();
-    startTopologyPrewarm();
-  }
-  /* node:coverage enable */
-});
-
-/* node:coverage disable */
-// Idle pre-warm: walk the unified timeline and pre-compute each frame's
-// topology in the background, so once the user scrubs into a previously-
-// unvisited frame the result is already cached. ~5 ms of work per frame
-// (after the bbox/mask perf fix) × ~48 frames = a quarter-second of work,
-// spread over ~1 s of wall-clock via setTimeout pauses so it stays
-// invisible behind the main thread.
-let prewarmTimer = 0;
-function startTopologyPrewarm() {
-  cancelTopologyPrewarm();
-  prewarmTimer = setTimeout(stepTopologyPrewarm, 50);
-}
-function cancelTopologyPrewarm() {
-  if (prewarmTimer) {
-    clearTimeout(prewarmTimer);
-    prewarmTimer = 0;
-  }
-}
-function stepTopologyPrewarm() {
-  prewarmTimer = 0;
-  const frames = appState.unifiedFrames;
-  if (!frames || frames.length === 0) return;
-  // Walk forward from the playhead first (most likely scrub direction),
-  // then wrap around. Pick the first uncached frame.
-  const startIdx = clampIdx(appState.playheadIdx, frames.length);
-  let target = null;
-  for (let i = 0; i < frames.length; i++) {
-    const f = frames[(startIdx + i) % frames.length];
-    if (f?.grid && !topologyCache.has(f.time)) {
-      target = f;
-      break;
-    }
-  }
-  if (!target) return; // cache fully warmed
-  try {
-    ensureTopologyForFrame(target);
-  } catch (err) {
-    console.warn('[skyo-prediction] topology prewarm step failed:', err);
-  }
-  // Yield to keep the main thread responsive. setTimeout(0) is fine —
-  // each ensureTopologyForFrame is a few ms.
-  prewarmTimer = setTimeout(stepTopologyPrewarm, 16);
-}
-/* node:coverage enable */
-
-// Compute topology for the new playhead frame on every scrub — only when
-// the topology layer is visible.
-watch(['playheadIdx'], () => {
-  /* node:coverage disable */
-  if (!appState.stageNeeds?.topology) return;
-  if (appState.unifiedFrames?.length) refetchTopology();
-  /* node:coverage enable */
-});
-
-// Render topology to the SVG layer whenever the data OR the display
-// config changes (so toggling labels / render mode / simplification in
-// the modal redraws immediately without recomputing the topology).
-watch(['topology.data', 'topologyConfig'], () => {
-  /* node:coverage disable */
-  if (!mapHandle) return;
-  const top = appState.topology?.data?.[0];
-  if (!top) {
-    mapHandle.setTopology([]);
-    return;
-  }
-  const cfg = appState.topologyConfig ?? INITIAL_TOPOLOGY_CONFIG;
-  const items = buildTopologyRenderItems(top, {
-    tileSize: TILE_SIZE,
-    showLabels: cfg.showLabels,
-    renderMode: cfg.renderMode,
-    colorMode: cfg.colorMode,
-    simplifyTolerance: cfg.simplifyTolerance,
-  });
-  mapHandle.setTopology(items);
-  /* node:coverage enable */
-});
-
 watch(['flowField.data', 'unifiedFrames', 'playheadIdx', 'vectorColorMode'], () => {
   /* node:coverage disable */
   if (!mapHandle) return;
@@ -966,132 +774,6 @@ defineFn('setColorMode', (el) => {
   const mode = el.value;
   if (COLOR_MODES.includes(mode)) setValue('vectorColorMode', mode);
 });
-
-// ─── Cloud-topology display modal ──────────────────────────────────────
-function patchTopologyConfig(partial) {
-  setValue('topologyConfig', { ...appState.topologyConfig, ...partial });
-}
-defineFn('openTopologyConfig', () => patchTopologyConfig({ modalOpen: true }));
-defineFn('closeTopologyConfig', () => patchTopologyConfig({ modalOpen: false }));
-defineFn('setTopologyRenderMode', (el) => {
-  if (['fill', 'line', 'fill+line'].includes(el.value)) {
-    patchTopologyConfig({ renderMode: el.value });
-  }
-});
-defineFn('setTopologyColorMode', (el) => {
-  if (['tier', 'mono'].includes(el.value)) {
-    patchTopologyConfig({ colorMode: el.value });
-  }
-});
-defineFn('toggleTopologyLabels', (el) => {
-  patchTopologyConfig({ showLabels: Boolean(el.checked) });
-});
-defineFn('setTopologySimplification', (el) => {
-  const v = Number(el.value);
-  patchTopologyConfig({ simplifyTolerance: Number.isFinite(v) ? v : 0 });
-});
-
-/* node:coverage disable */
-function buildTopologyForFrame(frame, supporting) {
-  if (!frame?.grid) return null;
-  const decoded = appState.radarGrids?.data;
-  const lastObserved = decoded?.[decoded.length - 1];
-  const observedAnchor = lastObserved?.time ?? frame.time;
-  const leadMinutes = Math.round((frame.time - observedAnchor) / 60);
-  const convective = convectiveMask(frame.grid, frame.width, frame.height);
-  return buildTopology(frame.grid, frame.width, frame.height, {
-    ...supporting,
-    convective,
-  }, {
-    frame: {
-      time: new Date(frame.time * 1000).toISOString(),
-      kind: frame.kind,
-      leadMinutes,
-      intervalMinutes: DEFAULT_FRAME_INTERVAL_SEC / 60,
-      tile: { x: TILE_X, y: TILE_Y, z: TILE_Z },
-    },
-  });
-}
-
-function triggerDownload(filename, content, mimeType) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // Defer revoke until the click has been processed.
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-defineFn('exportTopologyFrame', () => {
-  const top = appState.topology?.data?.[0];
-  if (!top) {
-    console.warn('[skyo-prediction] no topology yet — scrub to a frame with rain first');
-    return;
-  }
-  const { filename, content, mimeType } = prepareTopologyExport(top);
-  triggerDownload(filename, content, mimeType);
-});
-
-defineFn('exportTopologyTimeline', () => {
-  const frames = appState.unifiedFrames;
-  if (!frames || frames.length === 0) {
-    console.warn('[skyo-prediction] no frames yet — wait for the radar to load');
-    return;
-  }
-  const supporting = {
-    trend: appState.trend?.data?.[0] ?? null,
-    cape: appState.cape?.data?.[0] ?? null,
-    thunderscore: appState.thunderstorm?.data?.[0] ?? null,
-    probability: appState.ensemble?.data?.[0] ?? null,
-    flow: appState.flowField?.data?.smoothed?.[0] ?? null,
-  };
-  const topologies = [];
-  for (const f of frames) {
-    if (!f?.grid) continue;
-    const t = buildTopologyForFrame(f, supporting);
-    if (t) topologies.push(t);
-  }
-  const { filename, content, mimeType } = prepareTopologyTimelineExport(topologies, {
-    tile: { x: TILE_X, y: TILE_Y, z: TILE_Z },
-  });
-  triggerDownload(filename, content, mimeType);
-});
-
-if (typeof window !== 'undefined') {
-  window.skyo = window.skyo || {};
-  window.skyo.exportTopology = (idx) => {
-    const frames = appState.unifiedFrames;
-    if (!frames || frames.length === 0) return null;
-    const i = clampIdx(Number.isFinite(idx) ? idx : appState.playheadIdx, frames.length);
-    const supporting = {
-      trend: appState.trend?.data?.[0] ?? null,
-      cape: appState.cape?.data?.[0] ?? null,
-      thunderscore: appState.thunderstorm?.data?.[0] ?? null,
-      probability: appState.ensemble?.data?.[0] ?? null,
-      flow: appState.flowField?.data?.smoothed?.[0] ?? null,
-    };
-    return buildTopologyForFrame(frames[i], supporting);
-  };
-  window.skyo.exportTopologyTimeline = () => {
-    const frames = appState.unifiedFrames ?? [];
-    const supporting = {
-      trend: appState.trend?.data?.[0] ?? null,
-      cape: appState.cape?.data?.[0] ?? null,
-      thunderscore: appState.thunderstorm?.data?.[0] ?? null,
-      probability: appState.ensemble?.data?.[0] ?? null,
-      flow: appState.flowField?.data?.smoothed?.[0] ?? null,
-    };
-    return frames
-      .filter((f) => f?.grid)
-      .map((f) => buildTopologyForFrame(f, supporting))
-      .filter(Boolean);
-  };
-}
-/* node:coverage enable */
 
 if (typeof window !== 'undefined') {
   window.appState = appState;

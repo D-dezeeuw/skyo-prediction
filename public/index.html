@@ -57,18 +57,6 @@
           </label>
         </fieldset>
 
-        <fieldset class="topology-export">
-          <legend>Cloud topology</legend>
-          <button class="export-btn"
-                  data-action="click" data-fn="openTopologyConfig"
-                  aria-label="Open topology display settings">⚙ Display</button>
-          <button class="export-btn"
-                  data-action="click" data-fn="exportTopologyFrame"
-                  aria-label="Download current frame as GeoJSON">⤓ Frame</button>
-          <button class="export-btn"
-                  data-action="click" data-fn="exportTopologyTimeline"
-                  aria-label="Download full timeline as GeoJSON">⤓ Timeline</button>
-        </fieldset>
       </aside>
     </div>
 
@@ -153,86 +141,10 @@
         <span class="pipe-label">Ensemble (P-rain)</span>
         <span class="pipe-value">{{ensembleStatus}}</span>
       </div>
-      <div class="pipe-stage">
-        <span class="pipe-label">Topology</span>
-        <span class="pipe-value">{{topologyStatus}}</span>
-      </div>
     </section>
 
     <p class="error" data-if="radarHistory.error">Failed to load radar: {{radarHistory.error.message}}</p>
     <p class="muted small">Inspect <code>appState</code> in the dev console — <code>appState.flowField.data</code> exposes the smoothed vector field.</p>
-
-    <div class="modal" data-if="topologyConfig.modalOpen" role="dialog" aria-labelledby="topology-modal-title">
-      <div class="modal-backdrop" data-action="click" data-fn="closeTopologyConfig"></div>
-      <div class="modal-panel">
-        <header class="modal-header">
-          <h2 id="topology-modal-title">Cloud topology display</h2>
-          <button class="modal-close"
-                  data-action="click" data-fn="closeTopologyConfig"
-                  aria-label="Close">×</button>
-        </header>
-
-        <fieldset class="modal-field">
-          <legend>Render style</legend>
-          <label>
-            <input type="radio" name="topology-render" value="fill"
-                   :checked="topologyConfig.renderMode === 'fill'"
-                   data-action="change" data-fn="setTopologyRenderMode">
-            <span>Fill only</span>
-          </label>
-          <label>
-            <input type="radio" name="topology-render" value="line"
-                   :checked="topologyConfig.renderMode === 'line'"
-                   data-action="change" data-fn="setTopologyRenderMode">
-            <span>Lines only</span>
-          </label>
-          <label>
-            <input type="radio" name="topology-render" value="fill+line"
-                   :checked="topologyConfig.renderMode === 'fill+line'"
-                   data-action="change" data-fn="setTopologyRenderMode">
-            <span>Fill + lines</span>
-          </label>
-        </fieldset>
-
-        <fieldset class="modal-field">
-          <legend>Colour</legend>
-          <label>
-            <input type="radio" name="topology-colour" value="tier"
-                   :checked="topologyConfig.colorMode === 'tier'"
-                   data-action="change" data-fn="setTopologyColorMode">
-            <span>Severity hue</span>
-          </label>
-          <label>
-            <input type="radio" name="topology-colour" value="mono"
-                   :checked="topologyConfig.colorMode === 'mono'"
-                   data-action="change" data-fn="setTopologyColorMode">
-            <span>White (severity → opacity)</span>
-          </label>
-        </fieldset>
-
-        <fieldset class="modal-field">
-          <legend>Labels</legend>
-          <label class="modal-checkbox">
-            <input type="checkbox"
-                   :checked="topologyConfig.showLabels"
-                   data-action="change" data-fn="toggleTopologyLabels">
-            <span>Show tier badges (SEVERE, T-STORM)</span>
-          </label>
-        </fieldset>
-
-        <fieldset class="modal-field">
-          <legend>Shape simplification</legend>
-          <label class="modal-slider">
-            <input type="range" min="0" max="12" step="0.5"
-                   :value="topologyConfig.simplifyTolerance"
-                   data-action="input" data-fn="setTopologySimplification"
-                   aria-label="Simplification tolerance">
-            <span class="value">{{topologyConfig.simplifyTolerance}} px</span>
-          </label>
-          <p class="muted small">0 = full detail. Higher values drop vertices via Douglas–Peucker for a more abstract shape.</p>
-        </fieldset>
-      </div>
-    </div>
   </main>
   <script type="module" src="/app.js"></script>
 </body>

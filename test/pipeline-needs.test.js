@@ -15,16 +15,8 @@ describe('STAGE_DEPENDENCIES', () => {
     }
   });
 
-  test('topology layer is its own dependency for the topology stage', () => {
-    assert.ok(STAGE_DEPENDENCIES.topology.includes('topology'));
-  });
-
-  test('Cloud topology layer needs every other stage (it fuses all signals)', () => {
-    // For every stage other than the leaf ones, topology should be listed
-    const heavyStages = ['flowField', 'trend', 'cape', 'thunderstorm', 'ensemble', 'interpolated', 'forecast'];
-    for (const s of heavyStages) {
-      assert.ok(STAGE_DEPENDENCIES[s].includes('topology'), `${s} should depend on topology`);
-    }
+  test('topology stage is no longer declared (layer removed)', () => {
+    assert.equal(STAGE_DEPENDENCIES.topology, undefined);
   });
 });
 
@@ -45,17 +37,16 @@ describe('computeStageNeeds', () => {
   });
 
   test('only Motion vectors visible → only flowField is needed', () => {
-    const needs = computeStageNeeds([visible('motion-vectors'), hidden('topology'), hidden('thunderstorm')]);
+    const needs = computeStageNeeds([visible('motion-vectors'), hidden('thunderstorm')]);
     assert.equal(needs.flowField, true);
     assert.equal(needs.trend, false);
     assert.equal(needs.cape, false);
     assert.equal(needs.thunderstorm, false);
     assert.equal(needs.ensemble, false);
-    assert.equal(needs.topology, false);
   });
 
-  test('only Historical radar visible → flowField/trend/omega/interp/forecast needed (for future frames + smooth playback) but NOT topology / thunderstorm / ensemble', () => {
-    const needs = computeStageNeeds([visible('radar-history'), hidden('topology'), hidden('thunderstorm'), hidden('motion-vectors')]);
+  test('only Historical radar visible → flowField/trend/omega/interp/forecast needed (for future frames + smooth playback) but NOT thunderstorm / ensemble', () => {
+    const needs = computeStageNeeds([visible('radar-history'), hidden('thunderstorm'), hidden('motion-vectors')]);
     // Stages the radar layer needs (for forecast + interpolation):
     assert.equal(needs.flowField, true);
     assert.equal(needs.trend, true);
@@ -67,29 +58,9 @@ describe('computeStageNeeds', () => {
     assert.equal(needs.thunderstorm, false);
     assert.equal(needs.ensemble, false);
     assert.equal(needs.confidence, false);
-    assert.equal(needs.topology, false);
   });
 
-  test('only Cloud topology visible → all stages topology consumes are needed', () => {
-    const needs = computeStageNeeds([visible('topology')]);
-    // Topology directly consumes trend, cape, thunderscore, probability,
-    // flow, and depends on interpolated + forecast for the full unified
-    // timeline. Omega is only used via the forecast trend (optional);
-    // confidence is consumed only by its own layer.
-    assert.equal(needs.flowField, true);
-    assert.equal(needs.trend, true);
-    assert.equal(needs.cape, true);
-    assert.equal(needs.thunderstorm, true);
-    assert.equal(needs.ensemble, true);
-    assert.equal(needs.interpolated, true);
-    assert.equal(needs.forecast, true);
-    assert.equal(needs.topology, true);
-    // Optional / not consumed directly:
-    assert.equal(needs.omega, false);
-    assert.equal(needs.confidence, false);
-  });
-
-  test('only Thunderstorm risk visible → trend + cape + thunderstorm + topology=false', () => {
+  test('only Thunderstorm risk visible → trend + cape + thunderstorm', () => {
     const needs = computeStageNeeds([visible('thunderstorm')]);
     assert.equal(needs.trend, true);
     assert.equal(needs.cape, true);
@@ -97,7 +68,6 @@ describe('computeStageNeeds', () => {
     assert.equal(needs.flowField, false);
     assert.equal(needs.ensemble, false);
     assert.equal(needs.confidence, false);
-    assert.equal(needs.topology, false);
   });
 
   test('only Probability layer → flowField + ensemble (no thunderstorm/cape)', () => {
@@ -106,7 +76,6 @@ describe('computeStageNeeds', () => {
     assert.equal(needs.ensemble, true);
     assert.equal(needs.cape, false);
     assert.equal(needs.thunderstorm, false);
-    assert.equal(needs.topology, false);
   });
 
   test('only Forecast uncertainty (confidence) → flowField + confidence', () => {
@@ -115,11 +84,10 @@ describe('computeStageNeeds', () => {
     assert.equal(needs.confidence, true);
     assert.equal(needs.trend, false);
     assert.equal(needs.ensemble, false);
-    assert.equal(needs.topology, false);
   });
 
   test('hidden layers do not contribute to needs', () => {
-    const needs = computeStageNeeds([hidden('topology'), hidden('thunderstorm'), hidden('motion-vectors')]);
+    const needs = computeStageNeeds([hidden('thunderstorm'), hidden('motion-vectors')]);
     for (const s of STAGES) assert.equal(needs[s], false);
   });
 

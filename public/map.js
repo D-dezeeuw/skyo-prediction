@@ -200,20 +200,6 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   let vectorsVisible = true;
   let vectorsOpacity = 0.9;
 
-  // Cloud topology overlay (SVG polygons + tier badges). Sits on top
-  // of the radar / data overlays — the whole point of vector polygons
-  // is they read at a glance over whatever heatmap is below.
-  const topologySvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  topologySvg.setAttribute('viewBox', `0 0 ${tileSize} ${tileSize}`);
-  topologySvg.setAttribute('preserveAspectRatio', 'none');
-  topologySvg.style.pointerEvents = 'none';
-  const topologyOverlay = L.svgOverlay(topologySvg, latLngBounds, {
-    opacity: 0,
-    interactive: false,
-  }).addTo(map);
-  let topologyVisible = true;
-  let topologyOpacity = 0.85;
-
   const applyRadarOpacity = () => {
     radarOverlay.setOpacity(radarVisible ? radarOpacity : 0);
   };
@@ -237,9 +223,6 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   };
   const applyVectorsOpacity = () => {
     vectorsOverlay.setOpacity(vectorsVisible ? vectorsOpacity : 0);
-  };
-  const applyTopologyOpacity = () => {
-    topologyOverlay.setOpacity(topologyVisible ? topologyOpacity : 0);
   };
 
   return {
@@ -481,58 +464,6 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     setVectorsVisible(v) {
       vectorsVisible = Boolean(v);
       applyVectorsOpacity();
-    },
-    setTopology(items) {
-      while (topologySvg.firstChild) topologySvg.removeChild(topologySvg.firstChild);
-      if (!items || items.length === 0) {
-        applyTopologyOpacity();
-        return;
-      }
-      for (const item of items) {
-        if (item.type === 'polygon') {
-          const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-          p.setAttribute('d', item.d);
-          p.setAttribute('stroke', item.stroke);
-          p.setAttribute('stroke-width', String(item.strokeWidth ?? 1.2));
-          if (item.strokeOpacity != null && item.strokeOpacity < 1) {
-            p.setAttribute('stroke-opacity', String(item.strokeOpacity));
-          }
-          p.setAttribute('stroke-linejoin', 'round');
-          p.setAttribute('stroke-linecap', 'round');
-          p.setAttribute('fill', item.fill ?? 'none');
-          if (item.fill && item.fill !== 'none') {
-            p.setAttribute('fill-opacity', String(item.fillOpacity ?? 0.18));
-          }
-          if (item.dashed) {
-            p.setAttribute('stroke-dasharray', '4 3');
-          }
-          topologySvg.appendChild(p);
-        } else if (item.type === 'label') {
-          const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-          text.setAttribute('x', String(item.x));
-          text.setAttribute('y', String(item.y));
-          text.setAttribute('text-anchor', 'middle');
-          text.setAttribute('dominant-baseline', 'middle');
-          text.setAttribute('font-size', '10');
-          text.setAttribute('font-weight', '700');
-          text.setAttribute('font-family', 'system-ui, sans-serif');
-          text.setAttribute('fill', item.stroke);
-          text.setAttribute('stroke', '#0008');
-          text.setAttribute('stroke-width', '0.4');
-          text.setAttribute('paint-order', 'stroke');
-          text.textContent = item.text;
-          topologySvg.appendChild(text);
-        }
-      }
-      applyTopologyOpacity();
-    },
-    setTopologyOpacity(v) {
-      topologyOpacity = Math.max(0, Math.min(1, v));
-      applyTopologyOpacity();
-    },
-    setTopologyVisible(v) {
-      topologyVisible = Boolean(v);
-      applyTopologyOpacity();
     },
     destroy() {
       map.remove();
