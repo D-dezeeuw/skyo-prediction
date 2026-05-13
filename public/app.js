@@ -3,7 +3,14 @@ import { initialState, readyState } from './state.js';
 import { fetchManifest, loadHistory } from './radar.js';
 import { mountMap, DEFAULT_VIEW } from './map.js';
 import { clampIdx, formatFrameTime, nextIdx, FRAME_INTERVAL_MS } from './timeline.js';
-import { computeFlowPairs, smoothFlows, DEFAULT_SMOOTHING_WINDOW } from './flow.js';
+import {
+  computeFlowPairs,
+  medianFilter,
+  smoothFlows,
+  DEFAULT_SMOOTHING_WINDOW,
+  DEFAULT_FLOW_INTENSITY_THRESHOLD,
+  DEFAULT_FLOW_CONFIDENCE_THRESHOLD,
+} from './flow.js';
 import { buildArrows, COLOR_MODES } from './vectors.js';
 
 const RADAR_LAYER_ID = 'radar-history';
@@ -68,8 +75,23 @@ const refetchFlow = addAsync('flowField', async () => {
   if (!decoded || decoded.length < 2) return null;
   await Promise.resolve();
   const t0 = performance.now();
-  const flowOpts = { blockSize: FLOW_BLOCK_SIZE, searchRadius: FLOW_SEARCH_RADIUS };
-  const pairs = computeFlowPairs(decoded, flowOpts);
+  // Three layered noise filters per Story 5.5:
+  //   1. intensityThreshold drops blocks with no signal in either frame
+  //      (prevents the bestMatch lottery on flat-zero areas)
+  //   2. confidenceThreshold drops matches whose SSD/energy is too high
+  //      (the "best" candidate was still a poor fit — coincidence, not
+  //       correspondence)
+  //   3. medianFilter on each pair (in flowFromHistory) replaces outlier
+  //      vectors with the median of their 3×3 neighbourhood — kills
+  //      stray "false motion" arrows that disagree with all neighbours
+  const flowOpts = {
+    blockSize: FLOW_BLOCK_SIZE,
+    searchRadius: FLOW_SEARCH_RADIUS,
+    intensityThreshold: DEFAULT_FLOW_INTENSITY_THRESHOLD,
+    confidenceThreshold: DEFAULT_FLOW_CONFIDENCE_THRESHOLD,
+  };
+  const rawPairs = computeFlowPairs(decoded, flowOpts);
+  const pairs = rawPairs.map(medianFilter);
   const smoothed = smoothFlows(pairs.slice(-DEFAULT_SMOOTHING_WINDOW));
   return { pairs, smoothed, computeMs: performance.now() - t0 };
 });
