@@ -68,7 +68,11 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     maxBounds: latLngBounds.pad(0.05),
     maxBoundsViscosity: 1.0,
   });
-  map.fitBounds(latLngBounds);
+  // fitBounds picks the tightest zoom that still shows the whole tile;
+  // bump it by 1 so the default view sits closer in (radar detail more
+  // visible, panning still stays inside maxBounds).
+  const fitZoom = map.getBoundsZoom(latLngBounds);
+  map.setView(latLngBounds.getCenter(), fitZoom + 1);
 
   L.tileLayer(BASE_STYLES.dark.url, BASE_STYLES.dark).addTo(map);
 
