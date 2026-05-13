@@ -68,7 +68,21 @@ const refetchGrids = addAsync('radarGrids', async () => {
   /* node:coverage enable */
 });
 
-const refetchInterpolated = addAsync('interpolated', async () => {
+// Wrap each pipeline body in logged() so the underlying error stack
+// shows up in the console — Spektrum's addAsync stores only the
+// stringified message, which is too thin for diagnosis.
+function logged(label, fn) {
+  return async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (err) {
+      console.error(`[skyo-prediction] ${label} threw:`, err);
+      throw err;
+    }
+  };
+}
+
+const refetchInterpolated = addAsync('interpolated', logged('interpolated', async () => {
   const decoded = appState.radarGrids?.data;
   const pairs = appState.flowField?.data?.pairs;
   if (!decoded || decoded.length < 2 || !pairs || pairs.length !== decoded.length - 1) return null;
@@ -80,9 +94,9 @@ const refetchInterpolated = addAsync('interpolated', async () => {
     factor: INTERPOLATION_FACTOR,
     computeMs: performance.now() - t0,
   };
-});
+}));
 
-const refetchForecast = addAsync('forecast', async () => {
+const refetchForecast = addAsync('forecast', logged('forecast', async () => {
   const flow = appState.flowField?.data?.smoothed;
   const decoded = appState.radarGrids?.data;
   if (!flow || !decoded || decoded.length === 0) return null;
@@ -97,9 +111,9 @@ const refetchForecast = addAsync('forecast', async () => {
     startTime: last.time,
     computeMs: performance.now() - t0,
   };
-});
+}));
 
-const refetchFlow = addAsync('flowField', async () => {
+const refetchFlow = addAsync('flowField', logged('flowField', async () => {
   const decoded = appState.radarGrids?.data;
   if (!decoded || decoded.length < 2) return null;
   await Promise.resolve();
@@ -114,7 +128,7 @@ const refetchFlow = addAsync('flowField', async () => {
   const pairs = rawPairs.map(medianFilter);
   const smoothed = smoothFlows(pairs.slice(-DEFAULT_SMOOTHING_WINDOW));
   return { pairs, smoothed, computeMs: performance.now() - t0 };
-});
+}));
 
 // ─── 3. Computed selectors ─────────────────────────────────────────────
 computed('playIcon', ['playing'], (s) => (s.playing ? '⏸' : '▶'));
@@ -152,11 +166,14 @@ computed('currentFrameKind', ['unifiedFrames', 'playheadIdx'], (s) => {
 
 computed('observedFrameCount', ['radarGrids.data'], (s) => s.radarGrids?.data?.length ?? 0);
 
+// Spektrum's addAsync stores `error` as the stringified message
+// (`err?.message || String(err)`), NOT an Error object — so reading
+// `.message` off it produces "undefined". Use the string directly.
 computed('flowStatus', ['flowField'], (s) => {
   const f = s.flowField;
   if (!f) return 'idle';
   if (f.loading) return 'computing';
-  if (f.error) return `error: ${f.error.message}`;
+  if (f.error) return `error: ${f.error}`;
   if (f.data) {
     const { smoothed, pairs, computeMs } = f.data;
     return `ready: ${smoothed.width}×${smoothed.height} field, ${pairs.length} pairs in ${computeMs.toFixed(0)} ms`;
@@ -168,7 +185,7 @@ computed('gridStatus', ['radarGrids'], (s) => {
   const g = s.radarGrids;
   if (!g) return 'idle';
   if (g.loading) return 'decoding';
-  if (g.error) return `error: ${g.error.message}`;
+  if (g.error) return `error: ${g.error}`;
   if (g.data) return `${g.data.length} grids`;
   return 'idle';
 });
@@ -177,7 +194,7 @@ computed('forecastStatus', ['forecast'], (s) => {
   const f = s.forecast;
   if (!f) return 'idle';
   if (f.loading) return 'advecting';
-  if (f.error) return `error: ${f.error.message}`;
+  if (f.error) return `error: ${f.error}`;
   if (f.data) return `${f.data.frames.length} frames in ${f.data.computeMs.toFixed(0)} ms`;
   return 'idle';
 });
@@ -186,7 +203,7 @@ computed('interpStatus', ['interpolated'], (s) => {
   const i = s.interpolated;
   if (!i) return 'idle';
   if (i.loading) return 'computing';
-  if (i.error) return `error: ${i.error.message}`;
+  if (i.error) return `error: ${i.error}`;
   if (i.data) return `${i.data.frames.length} frames (×${i.data.factor})`;
   return 'idle';
 });
