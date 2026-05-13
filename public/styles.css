@@ -84,6 +84,11 @@ h2 {
   min-height: 70vh;
 }
 
+#map .leaflet-container .leaflet-control-attribution {
+  background: transparent;
+  opacity: 0.5;
+}
+
 .layers-panel {
   background: var(--panel);
   border: 1px solid var(--border);
