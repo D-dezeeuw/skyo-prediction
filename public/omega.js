@@ -44,12 +44,20 @@ export function buildSampleGrid(bounds, dim = OMEGA_GRID_DIM) {
 }
 
 export function buildOmegaUrl(sampleGrid) {
+  return buildOpenMeteoUrl(sampleGrid, 'vertical_velocity_850hPa');
+}
+
+/** Generic Open-Meteo multi-point URL builder. */
+export function buildOpenMeteoUrl(sampleGrid, hourlyVariable) {
   if (!sampleGrid || !Array.isArray(sampleGrid.lats) || !Array.isArray(sampleGrid.lons)) {
-    throw new Error('buildOmegaUrl: sampleGrid with lats[] and lons[] required');
+    throw new Error('buildOpenMeteoUrl: sampleGrid with lats[] and lons[] required');
+  }
+  if (typeof hourlyVariable !== 'string' || hourlyVariable.length === 0) {
+    throw new Error('buildOpenMeteoUrl: hourlyVariable required');
   }
   const latStr = sampleGrid.lats.map((v) => v.toFixed(3)).join(',');
   const lonStr = sampleGrid.lons.map((v) => v.toFixed(3)).join(',');
-  return `${OMEGA_API_BASE}?latitude=${latStr}&longitude=${lonStr}&hourly=vertical_velocity_850hPa&forecast_days=1`;
+  return `${OMEGA_API_BASE}?latitude=${latStr}&longitude=${lonStr}&hourly=${hourlyVariable}&forecast_days=1`;
 }
 
 /**
@@ -59,21 +67,29 @@ export function buildOmegaUrl(sampleGrid) {
  * (e.g. "2026-05-13T10") or falls back to the first hour.
  */
 export function parseOmegaResponse(data, dim, currentHourIso = null) {
+  return parseOpenMeteoResponse(data, dim, 'vertical_velocity_850hPa', currentHourIso);
+}
+
+/** Generic Open-Meteo multi-point response parser. */
+export function parseOpenMeteoResponse(data, dim, hourlyVariable, currentHourIso = null) {
   if (!Array.isArray(data)) {
-    throw new Error('parseOmegaResponse: response must be an array of locations');
+    throw new Error('parseOpenMeteoResponse: response must be an array of locations');
   }
   if (!Number.isInteger(dim) || dim < 2) {
-    throw new Error('parseOmegaResponse: dim must be an integer >= 2');
+    throw new Error('parseOpenMeteoResponse: dim must be an integer >= 2');
+  }
+  if (typeof hourlyVariable !== 'string' || hourlyVariable.length === 0) {
+    throw new Error('parseOpenMeteoResponse: hourlyVariable required');
   }
   const expected = dim * dim;
   if (data.length !== expected) {
-    throw new Error(`parseOmegaResponse: expected ${expected} locations, got ${data.length}`);
+    throw new Error(`parseOpenMeteoResponse: expected ${expected} locations, got ${data.length}`);
   }
   const grid = new Float32Array(expected);
   for (let i = 0; i < data.length; i++) {
     const loc = data[i] ?? {};
     const times = loc.hourly?.time ?? [];
-    const values = loc.hourly?.vertical_velocity_850hPa ?? [];
+    const values = loc.hourly?.[hourlyVariable] ?? [];
     let idx = 0;
     if (currentHourIso) {
       const matchIdx = times.findIndex((t) => typeof t === 'string' && t.startsWith(currentHourIso));

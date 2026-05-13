@@ -17,6 +17,8 @@ import { encodeRainRateToRgba } from './palette.js';
 import { encodeTrendToRgba } from './trend.js';
 import { encodeConfidenceToRgba } from './confidence.js';
 import { encodeOmegaToRgba } from './omega.js';
+import { encodeCapeToRgba } from './cape.js';
+import { encodeThunderstormToRgba } from './thunderstorm.js';
 
 const LEAFLET_VERSION = '1.9.4';
 const LEAFLET_CSS = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`;
@@ -147,6 +149,31 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   let omegaOpacity = 0.65;
   let omegaKey = null;
 
+  // CAPE overlay (sequential orange→red for instability magnitude).
+  const capeCanvas = document.createElement('canvas');
+  capeCanvas.width = tileSize;
+  capeCanvas.height = tileSize;
+  const capeOverlay = L.imageOverlay(transparentPng, latLngBounds, {
+    opacity: 0,
+    interactive: false,
+  }).addTo(map);
+  let capeVisible = false;
+  let capeOpacity = 0.65;
+  let capeKey = null;
+
+  // Thunderstorm-risk overlay (pinky-red — the strongest visual cue;
+  // sits on top of the data overlays, below vectors).
+  const thunderCanvas = document.createElement('canvas');
+  thunderCanvas.width = tileSize;
+  thunderCanvas.height = tileSize;
+  const thunderOverlay = L.imageOverlay(transparentPng, latLngBounds, {
+    opacity: 0,
+    interactive: false,
+  }).addTo(map);
+  let thunderVisible = false;
+  let thunderOpacity = 0.75;
+  let thunderKey = null;
+
   // Vectors overlay (SVG arrows).
   const vectorsSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   vectorsSvg.setAttribute('viewBox', `0 0 ${tileSize} ${tileSize}`);
@@ -170,6 +197,12 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   };
   const applyOmegaOpacity = () => {
     omegaOverlay.setOpacity(omegaVisible ? omegaOpacity : 0);
+  };
+  const applyCapeOpacity = () => {
+    capeOverlay.setOpacity(capeVisible ? capeOpacity : 0);
+  };
+  const applyThunderOpacity = () => {
+    thunderOverlay.setOpacity(thunderVisible ? thunderOpacity : 0);
   };
   const applyVectorsOpacity = () => {
     vectorsOverlay.setOpacity(vectorsVisible ? vectorsOpacity : 0);
@@ -295,6 +328,58 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     setOmegaVisible(v) {
       omegaVisible = Boolean(v);
       applyOmegaOpacity();
+    },
+    renderCape(grid, width, height, key = null) {
+      if (!grid) return;
+      if (key !== null && key === capeKey) {
+        applyCapeOpacity();
+        return;
+      }
+      if (width !== capeCanvas.width || height !== capeCanvas.height) {
+        capeCanvas.width = width;
+        capeCanvas.height = height;
+      }
+      const ctx = capeCanvas.getContext('2d');
+      const imageData = ctx.createImageData(width, height);
+      imageData.data.set(encodeCapeToRgba(grid, width, height));
+      ctx.putImageData(imageData, 0, 0);
+      capeOverlay.setUrl(capeCanvas.toDataURL('image/png'));
+      capeKey = key;
+      applyCapeOpacity();
+    },
+    setCapeOpacity(v) {
+      capeOpacity = Math.max(0, Math.min(1, v));
+      applyCapeOpacity();
+    },
+    setCapeVisible(v) {
+      capeVisible = Boolean(v);
+      applyCapeOpacity();
+    },
+    renderThunder(grid, width, height, key = null) {
+      if (!grid) return;
+      if (key !== null && key === thunderKey) {
+        applyThunderOpacity();
+        return;
+      }
+      if (width !== thunderCanvas.width || height !== thunderCanvas.height) {
+        thunderCanvas.width = width;
+        thunderCanvas.height = height;
+      }
+      const ctx = thunderCanvas.getContext('2d');
+      const imageData = ctx.createImageData(width, height);
+      imageData.data.set(encodeThunderstormToRgba(grid, width, height));
+      ctx.putImageData(imageData, 0, 0);
+      thunderOverlay.setUrl(thunderCanvas.toDataURL('image/png'));
+      thunderKey = key;
+      applyThunderOpacity();
+    },
+    setThunderOpacity(v) {
+      thunderOpacity = Math.max(0, Math.min(1, v));
+      applyThunderOpacity();
+    },
+    setThunderVisible(v) {
+      thunderVisible = Boolean(v);
+      applyThunderOpacity();
     },
     setVectors(arrows) {
       while (vectorsSvg.firstChild) vectorsSvg.removeChild(vectorsSvg.firstChild);
