@@ -6,10 +6,10 @@ import { clampIdx, formatFrameTime, nextIdx, FRAME_INTERVAL_MS } from './timelin
 import {
   computeFlowPairs,
   medianFilter,
-  smoothFlows,
-  DEFAULT_SMOOTHING_WINDOW,
+  smoothFlowsWeighted,
   DEFAULT_FLOW_INTENSITY_THRESHOLD,
   DEFAULT_FLOW_CONFIDENCE_THRESHOLD,
+  DEFAULT_TEMPORAL_DECAY,
 } from './flow.js';
 import { buildArrows, COLOR_MODES } from './vectors.js';
 import { forecast as runForecast } from './advect.js';
@@ -155,11 +155,15 @@ const refetchFlow = addAsync('flowField', logged('flowField', async () => {
   };
   const rawPairs = computeFlowPairs(decoded, flowOpts);
   const pairs = rawPairs.map(medianFilter);
-  const smoothed = smoothFlows(pairs.slice(-DEFAULT_SMOOTHING_WINDOW));
-  // `pairs` is already an Array (Spektrum direct-assigns Arrays so the
-  // inner pair objects with their Float32Array `data` survive intact).
-  // `smoothed` is a plain object containing a Float32Array — wrap it in
-  // a 1-element array so deepMerge doesn't recurse and corrupt it.
+  // Use ALL pairs with exponential decay rather than uniform avg of
+  // last 3. Newer pairs dominate (recency bias for direction changes)
+  // but older pairs collectively dampen one-off bad pairs that would
+  // otherwise lock localised regions into "no motion".
+  const smoothed = smoothFlowsWeighted(pairs, { decay: DEFAULT_TEMPORAL_DECAY });
+  // pairs is already an Array (Spektrum direct-assigns Arrays so the
+  // inner pair objects with Float32Array data survive). smoothed is
+  // a plain object containing a Float32Array — wrap it in a 1-element
+  // array so deepMerge doesn't recurse and corrupt it.
   return { pairs, smoothed: smoothed ? [smoothed] : null, computeMs: performance.now() - t0 };
 }));
 

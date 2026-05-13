@@ -6,10 +6,12 @@ import {
   DEFAULT_SMOOTHING_WINDOW,
   DEFAULT_FLOW_INTENSITY_THRESHOLD,
   DEFAULT_FLOW_CONFIDENCE_THRESHOLD,
+  DEFAULT_TEMPORAL_DECAY,
   computeFlow,
   computeFlowPairs,
   medianFilter,
   smoothFlows,
+  smoothFlowsWeighted,
   flowFromHistory,
 } from '../public/flow.js';
 
@@ -53,6 +55,7 @@ describe('exports', () => {
     assert.equal(DEFAULT_SMOOTHING_WINDOW, 3);
     assert.equal(DEFAULT_FLOW_INTENSITY_THRESHOLD, 0.05);
     assert.equal(DEFAULT_FLOW_CONFIDENCE_THRESHOLD, 0.5);
+    assert.equal(DEFAULT_TEMPORAL_DECAY, 0.7);
   });
 });
 
@@ -160,6 +163,86 @@ describe('computeFlow', () => {
     const grid = new Float32Array(256);
     assert.throws(() => computeFlow(null, grid, 16, 16), /prev length/);
     assert.throws(() => computeFlow(grid, null, 16, 16), /curr length/);
+  });
+});
+
+describe('smoothFlowsWeighted', () => {
+  const mkField = (w, h, fill) => ({
+    width: w, height: h, blockSize: 16,
+    data: Float32Array.from({ length: w * h * 2 }, () => fill),
+  });
+
+  test('returns null for empty / non-array input', () => {
+    assert.equal(smoothFlowsWeighted([]), null);
+    assert.equal(smoothFlowsWeighted(null), null);
+  });
+
+  test('decay = 1 reduces to a uniform mean', () => {
+    const a = mkField(2, 2, 2);
+    const b = mkField(2, 2, 4);
+    const c = mkField(2, 2, 6);
+    const out = smoothFlowsWeighted([a, b, c], { decay: 1 });
+    for (const v of out.data) assert.equal(v, 4); // mean(2,4,6)
+  });
+
+  test('decay → 0+ collapses to "use only the newest"', () => {
+    const a = mkField(2, 2, 100);
+    const b = mkField(2, 2, 200);
+    const c = mkField(2, 2, 300);
+    const out = smoothFlowsWeighted([a, b, c], { decay: 0.001 });
+    // Newest contributes ~all the weight
+    for (const v of out.data) assert.ok(Math.abs(v - 300) < 1);
+  });
+
+  test('default decay 0.7 weights newest most heavily, older progressively less', () => {
+    const a = mkField(1, 1, 0);
+    const b = mkField(1, 1, 0);
+    const c = mkField(1, 1, 1); // newest
+    // Weights: [0.49, 0.7, 1] / 2.19 → newest dominates
+    const out = smoothFlowsWeighted([a, b, c]);
+    const expected = 1 / (0.7 ** 2 + 0.7 + 1);
+    // Float32 storage rounds to ~7 decimals — relax tolerance accordingly.
+    assert.ok(Math.abs(out.data[0] - expected) < 1e-6, `got ${out.data[0]}, expected ~${expected}`);
+  });
+
+  test('a one-off bad pair is dampened compared to uniform averaging', () => {
+    // 10 good pairs at vx=2; one outlier at the OLDEST slot at vx=99
+    const fields = [mkField(1, 1, 99), ...Array.from({ length: 10 }, () => mkField(1, 1, 2))];
+    const uniform = smoothFlowsWeighted(fields, { decay: 1 });
+    const decayed = smoothFlowsWeighted(fields, { decay: 0.7 });
+    // Uniform mean: (99 + 10*2) / 11 = 10.8 → outlier moves the answer a lot.
+    // Weighted: oldest pair gets weight 0.7^10 ≈ 0.028 → contribution ~0.85
+    // above the 2.0 baseline, much closer than uniform.
+    assert.ok(Math.abs(uniform.data[0] - 2) > 5, `uniform: ${uniform.data[0]}`);
+    assert.ok(Math.abs(decayed.data[0] - 2) < 1, `decayed: ${decayed.data[0]}`);
+    assert.ok(
+      Math.abs(decayed.data[0] - 2) < Math.abs(uniform.data[0] - 2),
+      'decayed should be closer to truth than uniform',
+    );
+  });
+
+  test('preserves blockSize/width/height from the first field', () => {
+    const a = mkField(4, 3, 0);
+    a.blockSize = 32;
+    const out = smoothFlowsWeighted([a]);
+    assert.equal(out.width, 4);
+    assert.equal(out.height, 3);
+    assert.equal(out.blockSize, 32);
+  });
+
+  test('throws on dimension mismatch', () => {
+    assert.throws(
+      () => smoothFlowsWeighted([mkField(2, 2, 0), mkField(3, 3, 0)]),
+      /must share dimensions/,
+    );
+  });
+
+  test('throws on invalid decay', () => {
+    const a = mkField(1, 1, 0);
+    assert.throws(() => smoothFlowsWeighted([a], { decay: 0 }), /decay/);
+    assert.throws(() => smoothFlowsWeighted([a], { decay: -0.5 }), /decay/);
+    assert.throws(() => smoothFlowsWeighted([a], { decay: 1.5 }), /decay/);
+    assert.throws(() => smoothFlowsWeighted([a], { decay: NaN }), /decay/);
   });
 });
 
