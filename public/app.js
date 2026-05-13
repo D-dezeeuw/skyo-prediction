@@ -96,7 +96,10 @@ const refetchTrend = addAsync('trend', logged('trend', async () => {
   await Promise.resolve();
   const t0 = performance.now();
   const field = computeTrend(decoded, { window: DEFAULT_TREND_WINDOW });
-  return field ? { ...field, computeMs: performance.now() - t0 } : null;
+  // Wrap in a single-element array so Spektrum's deepMerge sees Array
+  // and direct-assigns instead of recursing — recursion would corrupt
+  // the Float32Array `grid` into a plain object with numeric keys.
+  return field ? [{ ...field, computeMs: performance.now() - t0 }] : null;
 }));
 
 const refetchInterpolated = addAsync('interpolated', logged('interpolated', async () => {
@@ -114,16 +117,16 @@ const refetchInterpolated = addAsync('interpolated', logged('interpolated', asyn
 }));
 
 const refetchForecast = addAsync('forecast', logged('forecast', async () => {
-  const flow = appState.flowField?.data?.smoothed;
+  // Unwrap the Spektrum-protective array wrappers (see refetchFlow
+  // / refetchTrend for why we wrap).
+  const flow = appState.flowField?.data?.smoothed?.[0];
   const decoded = appState.radarGrids?.data;
   if (!flow || !decoded || decoded.length === 0) return null;
   const last = decoded[decoded.length - 1];
   // Phase-2: apply the per-pixel growth/decay trend during forecast
-  // advection. Skill is good for ~30–60 min lead time; we damp the
-  // trend so far-out forecasts don't blow up: at FORECAST_FRAME_COUNT
-  // steps, trendStrength = 0.5 means the final frame's growth is half
-  // what a constant-rate extrapolation would say.
-  const trend = appState.trend?.data ?? null;
+  // advection. Skill is good for ~30–60 min lead time; trendStrength
+  // 0.5 dampens far-out forecasts so they don't blow up.
+  const trend = appState.trend?.data?.[0] ?? null;
   await Promise.resolve();
   const t0 = performance.now();
   const frames = runForecast(last.grid, flow, FORECAST_FRAME_COUNT, last.width, last.height, {
@@ -153,7 +156,11 @@ const refetchFlow = addAsync('flowField', logged('flowField', async () => {
   const rawPairs = computeFlowPairs(decoded, flowOpts);
   const pairs = rawPairs.map(medianFilter);
   const smoothed = smoothFlows(pairs.slice(-DEFAULT_SMOOTHING_WINDOW));
-  return { pairs, smoothed, computeMs: performance.now() - t0 };
+  // `pairs` is already an Array (Spektrum direct-assigns Arrays so the
+  // inner pair objects with their Float32Array `data` survive intact).
+  // `smoothed` is a plain object containing a Float32Array — wrap it in
+  // a 1-element array so deepMerge doesn't recurse and corrupt it.
+  return { pairs, smoothed: smoothed ? [smoothed] : null, computeMs: performance.now() - t0 };
 }));
 
 // ─── 3. Computed selectors ─────────────────────────────────────────────
@@ -205,8 +212,9 @@ computed('flowStatus', ['flowField'], (s) => {
   if (f.loading) return 'computing';
   if (f.error) return `error: ${f.error}`;
   if (f.data) {
-    const { smoothed, pairs, computeMs } = f.data;
-    return `ready: ${smoothed.width}×${smoothed.height} field, ${pairs.length} pairs in ${computeMs.toFixed(0)} ms`;
+    const sm = f.data.smoothed?.[0];
+    if (!sm) return 'idle';
+    return `ready: ${sm.width}×${sm.height} field, ${f.data.pairs.length} pairs in ${f.data.computeMs.toFixed(0)} ms`;
   }
   return 'idle';
 });
@@ -243,7 +251,10 @@ computed('trendStatus', ['trend'], (s) => {
   if (!t) return 'idle';
   if (t.loading) return 'computing';
   if (t.error) return `error: ${t.error}`;
-  if (t.data) return `${t.data.width}×${t.data.height} over ${t.data.window} frames`;
+  if (t.data) {
+    const f = t.data[0];
+    return `${f.width}×${f.height} over ${f.window} frames`;
+  }
   return 'idle';
 });
 
@@ -318,7 +329,7 @@ watch(['radarGrids.data'], () => {
 // forecast picks up growth/decay once trend is ready.
 watch(['flowField.data', 'trend.data'], () => {
   /* node:coverage disable */
-  if (appState.flowField?.data?.smoothed) refetchForecast();
+  if (appState.flowField?.data?.smoothed?.[0]) refetchForecast();
   if (appState.flowField?.data?.pairs) refetchInterpolated();
   /* node:coverage enable */
 });
@@ -357,7 +368,7 @@ watch(['layers'], () => {
 watch(['trend.data'], () => {
   /* node:coverage disable */
   if (!mapHandle) return;
-  const t = appState.trend?.data;
+  const t = appState.trend?.data?.[0];
   if (!t) return;
   // Use window+timestamp as the dedupe key so we re-render exactly when
   // the trend recomputes, not on every layer toggle.
@@ -376,7 +387,7 @@ watch(['flowField.data', 'unifiedFrames', 'playheadIdx', 'vectorColorMode'], () 
   }
   const idx = clampIdx(appState.playheadIdx, frames.length);
   const f = frames[idx];
-  const flow = data.pairs?.[f.pairIdx] ?? data.smoothed;
+  const flow = data.pairs?.[f.pairIdx] ?? data.smoothed?.[0];
   if (!flow) {
     mapHandle.setVectors([]);
     return;
