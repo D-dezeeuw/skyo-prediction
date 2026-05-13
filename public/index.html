@@ -140,6 +140,10 @@
         <span class="pipe-label">Ensemble (P-rain)</span>
         <span class="pipe-value">{{ensembleStatus}}</span>
       </div>
+      <div class="pipe-stage">
+        <span class="pipe-label">Topology</span>
+        <span class="pipe-value">{{topologyStatus}}</span>
+      </div>
     </section>
 
     <p class="error" data-if="radarHistory.error">Failed to load radar: {{radarHistory.error.message}}</p>
