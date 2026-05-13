@@ -13,6 +13,8 @@ import {
 } from './flow.js';
 import { ensembleConfidence } from './confidence.js';
 import { fetchOmegaField, upsampleOmegaField } from './omega.js';
+import { fetchCapeField, upsampleCapeField } from './cape.js';
+import { convectiveMask, thunderstormScore } from './thunderstorm.js';
 import { tileBounds } from './vectors.js';
 import { buildArrows, COLOR_MODES } from './vectors.js';
 import { forecast as runForecast } from './advect.js';
@@ -25,6 +27,8 @@ const VECTORS_LAYER_ID = 'motion-vectors';
 const TREND_LAYER_ID = 'trend';
 const CONFIDENCE_LAYER_ID = 'confidence';
 const OMEGA_LAYER_ID = 'omega';
+const CAPE_LAYER_ID = 'cape';
+const THUNDER_LAYER_ID = 'thunderstorm';
 const TILE_X = 16;
 const TILE_Y = 10;
 const TILE_Z = 5;
@@ -54,6 +58,8 @@ const INITIAL_LAYERS = [
   { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 80 },
   { id: TREND_LAYER_ID, name: 'Growth / decay', visible: false, opacity: 65 },
   { id: OMEGA_LAYER_ID, name: 'Convergence (850 hPa)', visible: false, opacity: 65 },
+  { id: CAPE_LAYER_ID, name: 'CAPE (instability)', visible: false, opacity: 65 },
+  { id: THUNDER_LAYER_ID, name: 'Thunderstorm risk', visible: false, opacity: 75 },
   { id: CONFIDENCE_LAYER_ID, name: 'Forecast uncertainty', visible: false, opacity: 70 },
   { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 90 },
 ];
@@ -120,6 +126,36 @@ const refetchOmega = addAsync('omega', logged('omega', async () => {
   const upsampled = upsampleOmegaField(lowRes, ref.width, ref.height);
   return [{ ...upsampled, lowRes, computeMs: performance.now() - t0 }];
   /* node:coverage enable */
+}));
+
+// Phase-5: CAPE ingest — same pattern as omega.
+const refetchCape = addAsync('cape', logged('cape', async () => {
+  /* node:coverage disable */
+  const decoded = appState.radarGrids?.data;
+  if (!decoded || decoded.length === 0) return null;
+  const ref = decoded[0];
+  const bounds = tileBounds(TILE_X, TILE_Y, TILE_Z);
+  const t0 = performance.now();
+  const lowRes = await fetchCapeField(bounds);
+  const upsampled = upsampleCapeField(lowRes, ref.width, ref.height);
+  return [{ ...upsampled, lowRes, computeMs: performance.now() - t0 }];
+  /* node:coverage enable */
+}));
+
+// Phase-5: thunderstorm fusion — convective cell mask × growth trend ×
+// CAPE. Re-runs when any input updates; latest decoded frame drives the
+// convective mask (sharp gradients in current radar).
+const refetchThunderstorm = addAsync('thunderstorm', logged('thunderstorm', async () => {
+  const decoded = appState.radarGrids?.data;
+  if (!decoded || decoded.length === 0) return null;
+  const last = decoded[decoded.length - 1];
+  const trend = appState.trend?.data?.[0] ?? null;
+  const cape = appState.cape?.data?.[0] ?? null;
+  await Promise.resolve();
+  const t0 = performance.now();
+  const mask = convectiveMask(last.grid, last.width, last.height);
+  const score = thunderstormScore(mask, trend, cape);
+  return score ? [{ ...score, computeMs: performance.now() - t0 }] : null;
 }));
 
 const refetchTrend = addAsync('trend', logged('trend', async () => {
@@ -361,6 +397,30 @@ computed('omegaStatus', ['omega'], (s) => {
   return 'idle';
 });
 
+computed('capeStatus', ['cape'], (s) => {
+  const c = s.cape;
+  if (!c) return 'idle';
+  if (c.loading) return 'fetching';
+  if (c.error) return `error: ${c.error}`;
+  if (c.data) {
+    const f = c.data[0];
+    return `${f.lowRes.width}×${f.lowRes.height} → ${f.width}×${f.height} in ${f.computeMs.toFixed(0)} ms`;
+  }
+  return 'idle';
+});
+
+computed('thunderStatus', ['thunderstorm'], (s) => {
+  const t = s.thunderstorm;
+  if (!t) return 'idle';
+  if (t.loading) return 'fusing';
+  if (t.error) return `error: ${t.error}`;
+  if (t.data) {
+    const f = t.data[0];
+    return `${f.width}×${f.height} in ${f.computeMs.toFixed(0)} ms`;
+  }
+  return 'idle';
+});
+
 // ─── 4. Map handle (lazy) + bridge between state and Leaflet ───────────
 /* node:coverage disable */
 let mapHandle = null;
@@ -385,6 +445,12 @@ function applyLayerToMap(layer) {
   } else if (layer.id === OMEGA_LAYER_ID) {
     mapHandle.setOmegaVisible(layer.visible);
     mapHandle.setOmegaOpacity(opacity);
+  } else if (layer.id === CAPE_LAYER_ID) {
+    mapHandle.setCapeVisible(layer.visible);
+    mapHandle.setCapeOpacity(opacity);
+  } else if (layer.id === THUNDER_LAYER_ID) {
+    mapHandle.setThunderVisible(layer.visible);
+    mapHandle.setThunderOpacity(opacity);
   }
 }
 
@@ -431,7 +497,15 @@ watch(['radarGrids.data'], () => {
     refetchFlow();
     refetchTrend();
     refetchOmega();
+    refetchCape();
   }
+  /* node:coverage enable */
+});
+
+// Thunderstorm fusion fires when any of its three inputs updates.
+watch(['radarGrids.data', 'trend.data', 'cape.data'], () => {
+  /* node:coverage disable */
+  if ((appState.radarGrids?.data?.length ?? 0) >= 1) refetchThunderstorm();
   /* node:coverage enable */
 });
 
@@ -502,6 +576,24 @@ watch(['omega.data'], () => {
   const o = appState.omega?.data?.[0];
   if (!o) return;
   mapHandle.renderOmega(o.grid, o.width, o.height, `${o.computeMs}`);
+  /* node:coverage enable */
+});
+
+watch(['cape.data'], () => {
+  /* node:coverage disable */
+  if (!mapHandle) return;
+  const c = appState.cape?.data?.[0];
+  if (!c) return;
+  mapHandle.renderCape(c.grid, c.width, c.height, `${c.computeMs}`);
+  /* node:coverage enable */
+});
+
+watch(['thunderstorm.data'], () => {
+  /* node:coverage disable */
+  if (!mapHandle) return;
+  const t = appState.thunderstorm?.data?.[0];
+  if (!t) return;
+  mapHandle.renderThunder(t.grid, t.width, t.height, `${t.computeMs}`);
   /* node:coverage enable */
 });
 
