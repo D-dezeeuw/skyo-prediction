@@ -136,6 +136,10 @@
         <span class="pipe-label">Confidence</span>
         <span class="pipe-value">{{confidenceStatus}}</span>
       </div>
+      <div class="pipe-stage">
+        <span class="pipe-label">Ensemble (P-rain)</span>
+        <span class="pipe-value">{{ensembleStatus}}</span>
+      </div>
     </section>
 
     <p class="error" data-if="radarHistory.error">Failed to load radar: {{radarHistory.error.message}}</p>
