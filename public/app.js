@@ -663,7 +663,13 @@ watch(['unifiedFrames', 'playheadIdx', 'radarHistory.data'], () => {
   for (let i = observedFrames.length - 1; i >= 0; i--) {
     if (observedFrames[i].time <= playheadTime) { chosen = observedFrames[i]; break; }
   }
-  const url = buildTileUrlTemplate(host, chosen);
+  // Build the URL with smooth=0 + snow=0 so the source layer reads as
+  // truly raw RainViewer output. smooth=1 blends adjacent palette
+  // stops, which produces magenta/purple halos around cells (the high
+  // end of Universal Blue is magenta→purple at dBZ 65–70). snow=1
+  // re-tints cold precipitation in purple-blue and adds a separate
+  // snow palette on top.
+  const url = buildTileUrlTemplate(host, chosen, { smooth: 0, snow: 0 });
   mapHandle.setSourceFrame(url);
   /* node:coverage enable */
 });
