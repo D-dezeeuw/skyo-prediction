@@ -63,7 +63,7 @@ export function buildTopology(grid, width, height, supporting = {}, options = {}
 
   const thresholdsMeta = { rainMmPerHour: [...sortedThresholds], minAreaCells };
 
-  const { blobs } = labelConnectedComponents(grid, width, height, {
+  const { labels, blobs } = labelConnectedComponents(grid, width, height, {
     threshold: baseThreshold,
     minAreaCells,
   });
@@ -82,15 +82,18 @@ export function buildTopology(grid, width, height, supporting = {}, options = {}
     }
     const centroid = [sumX / blob.cells.length, sumY / blob.cells.length];
 
-    // Mask the source grid to this blob's footprint so contour extraction
-    // doesn't pick up neighbours.
-    const blobGrid = new Float32Array(width * height);
-    for (const p of blob.cells) blobGrid[p] = grid[p];
-
+    // No more allocating a width*height blobGrid per blob — marchingSquares
+    // now scans only blob.bbox (padded by 1 cell) and uses the labels array
+    // from segmentation to mask out cells that belong to OTHER blobs.
+    // Big perf win on small/medium blobs in large grids.
     const levels = [];
     for (const t of sortedThresholds) {
       if (t > blob.peak) continue;
-      const polygons = marchingSquares(blobGrid, width, height, t);
+      const polygons = marchingSquares(grid, width, height, t, {
+        bbox: blob.bbox,
+        mask: labels,
+        maskValue: blob.id,
+      });
       levels.push({ thresholdMmPerHour: t, polygons });
     }
 

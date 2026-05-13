@@ -21,7 +21,7 @@ import { tileBounds } from './vectors.js';
 
 export const DEFAULT_SIMPLIFY_TOLERANCE = 0.5;
 
-export function marchingSquares(grid, width, height, threshold) {
+export function marchingSquares(grid, width, height, threshold, options = {}) {
   if (!Number.isInteger(width) || width < 2 || !Number.isInteger(height) || height < 2) {
     throw new Error('marchingSquares: width and height must be integers >= 2');
   }
@@ -32,13 +32,36 @@ export function marchingSquares(grid, width, height, threshold) {
     throw new Error('marchingSquares: threshold must be finite');
   }
 
+  // Optional scan-bounding + label-masking — together these collapse the
+  // dominant per-blob cost in topology.js: we used to allocate a full
+  // width*height masked grid and march-square it, but only ~0.01% of the
+  // cells were inside a typical blob. Now we scan only the blob's bbox
+  // (padded by 1 cell) and use the labels array from segmentation to
+  // zero-out cells belonging to OTHER blobs on the fly.
+  const { bbox = null, mask = null, maskValue = null } = options;
+  const x0 = bbox ? Math.max(0, bbox.minX - 1) : 0;
+  const y0 = bbox ? Math.max(0, bbox.minY - 1) : 0;
+  const x1 = bbox ? Math.min(width - 1, bbox.maxX + 1) : width - 1;
+  const y1 = bbox ? Math.min(height - 1, bbox.maxY + 1) : height - 1;
+  const useMask = mask != null && maskValue != null;
+
   const segments = [];
-  for (let y = 0; y < height - 1; y++) {
-    for (let x = 0; x < width - 1; x++) {
-      const tl = grid[y * width + x];
-      const tr = grid[y * width + x + 1];
-      const br = grid[(y + 1) * width + x + 1];
-      const bl = grid[(y + 1) * width + x];
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const tlIdx = y * width + x;
+      const trIdx = tlIdx + 1;
+      const brIdx = trIdx + width;
+      const blIdx = tlIdx + width;
+      let tl = grid[tlIdx];
+      let tr = grid[trIdx];
+      let br = grid[brIdx];
+      let bl = grid[blIdx];
+      if (useMask) {
+        if (mask[tlIdx] !== maskValue) tl = 0;
+        if (mask[trIdx] !== maskValue) tr = 0;
+        if (mask[brIdx] !== maskValue) br = 0;
+        if (mask[blIdx] !== maskValue) bl = 0;
+      }
 
       const caseIdx =
         (bl >= threshold ? 1 : 0) |
