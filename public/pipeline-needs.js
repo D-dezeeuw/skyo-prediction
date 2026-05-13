@@ -17,17 +17,20 @@
  * Pure data — no DOM, no Spektrum.
  */
 
-/** Stage → array of layer ids that require it (directly or transitively). */
+/** Stage → array of layer ids that require it (directly or transitively).
+ *  Note: radarHistory + radarGrids are always-on (the source data) and
+ *  aren't gated. The "radar-source" tile-overlay layer uses radarHistory
+ *  directly (manifest fetch only) so it doesn't appear in any stage's
+ *  deps either. */
 export const STAGE_DEPENDENCIES = Object.freeze({
-  // flowField feeds: motion vectors (direct), interpolated playback for
-  // the past-radar layer, forecast (advection for the future-radar layer),
-  // ensemble, confidence.
-  flowField:    ['motion-vectors', 'radar-history', 'radar-forecast', 'probability', 'confidence'],
-  // trend goes into the forecast growth/decay (so the future-radar layer
-  // needs it) and into thunderstorm fusion.
-  trend:        ['trend', 'radar-forecast', 'thunderstorm'],
+  // flowField feeds: motion vectors, smooth playback for the radar layer,
+  // forecast advection, ensemble, confidence.
+  flowField:    ['motion-vectors', 'radar-history', 'probability', 'confidence'],
+  // trend feeds forecast growth/decay (so the smoothed radar layer's
+  // future half needs it) and thunderstorm fusion.
+  trend:        ['trend', 'radar-history', 'thunderstorm'],
   // omega is folded into the forecast trend; otherwise only the omega layer.
-  omega:        ['omega', 'radar-forecast'],
+  omega:        ['omega', 'radar-history'],
   // cape is consumed by thunderstorm fusion + its own layer.
   cape:         ['cape', 'thunderstorm'],
   // thunderstorm score feeds its own layer.
@@ -38,8 +41,8 @@ export const STAGE_DEPENDENCIES = Object.freeze({
   confidence:   ['confidence'],
   // interpolated smooths past-scrubbing through observed pairs.
   interpolated: ['radar-history'],
-  // forecast extends the radar into the next 2 h.
-  forecast:     ['radar-forecast'],
+  // forecast extends the smoothed radar into the next 2 h.
+  forecast:     ['radar-history'],
 });
 
 /**

@@ -1,6 +1,6 @@
 import { addAsync, appState, bindDOM, computed, defineFn, run, setValue, watch } from 'spektrum';
 import { initialState, readyState } from './state.js';
-import { fetchManifest, loadHistory } from './radar.js';
+import { fetchManifest, loadHistory, buildTileUrlTemplate } from './radar.js';
 import { mountMap, DEFAULT_VIEW } from './map.js';
 import { clampIdx, formatFrameTime, nextIdx, FRAME_INTERVAL_MS } from './timeline.js';
 import {
@@ -29,8 +29,13 @@ import { buildUnifiedFrames, DEFAULT_FRAME_INTERVAL_SEC } from './unify.js';
 import { computeTrend, DEFAULT_TREND_WINDOW } from './trend.js';
 import { computeStageNeeds } from './pipeline-needs.js';
 
-const RADAR_LAYER_ID = 'radar-history';      // observed + interpolated past
-const FORECAST_LAYER_ID = 'radar-forecast';   // advected future
+/** Smoothed canvas heatmap covering the full -2h..+2h unified timeline
+ *  (observed + interpolated + advected forecast). The primary view. */
+const RADAR_LAYER_ID = 'radar-history';
+/** Raw RainViewer source tiles, observed past only. Off by default —
+ *  the smoothed layer is the primary view; this is the "see the bytes
+ *  as they arrive" diagnostic. */
+const SOURCE_LAYER_ID = 'radar-source';
 const VECTORS_LAYER_ID = 'motion-vectors';
 const TREND_LAYER_ID = 'trend';
 const CONFIDENCE_LAYER_ID = 'confidence';
@@ -64,8 +69,8 @@ const INTERPOLATION_FACTOR = DEFAULT_INTERPOLATION_FACTOR;
 const PLAY_INTERVAL_MS = Math.max(60, Math.floor(FRAME_INTERVAL_MS / INTERPOLATION_FACTOR));
 
 const INITIAL_LAYERS = [
-  { id: RADAR_LAYER_ID, name: 'Precipitation (past)', visible: true, opacity: 90 },
-  { id: FORECAST_LAYER_ID, name: 'Precipitation (forecast)', visible: true, opacity: 75 },
+  { id: RADAR_LAYER_ID, name: 'Precipitation (smoothed)', visible: true, opacity: 90 },
+  { id: SOURCE_LAYER_ID, name: 'Precipitation (source)', visible: false, opacity: 85 },
   { id: TREND_LAYER_ID, name: 'Growth / decay', visible: false, opacity: 65 },
   { id: OMEGA_LAYER_ID, name: 'Convergence (850 hPa)', visible: false, opacity: 65 },
   { id: CAPE_LAYER_ID, name: 'CAPE (instability)', visible: false, opacity: 65 },
@@ -489,36 +494,15 @@ let mapHandle = null;
 let autoSeekDone = false;
 let lastRenderedTime = NaN;
 
-/**
- * The two radar layers (past + forecast) share a single canvas overlay
- * on the map — the choice of "active" layer for the current scrub
- * position is decided by the playhead frame's kind. This helper looks
- * up which layer entry should govern the canvas right now and applies
- * its visibility + opacity. Called from applyLayerToMap (so panel
- * changes propagate) and from renderCurrentFrame (so scrubbing flips
- * between past/forecast settings automatically).
- */
-function syncRadarLayerForPlayhead() {
-  if (!mapHandle) return;
-  const frames = appState.unifiedFrames;
-  const layers = appState.layers ?? [];
-  const idx = clampIdx(appState.playheadIdx ?? 0, frames?.length ?? 0);
-  const f = frames?.[idx];
-  const wantsForecast = f?.kind === 'forecast';
-  const id = wantsForecast ? FORECAST_LAYER_ID : RADAR_LAYER_ID;
-  const layer = layers.find((l) => l.id === id);
-  if (!layer) return;
-  mapHandle.setVisible(layer.visible);
-  mapHandle.setOpacity((layer.opacity ?? 0) / 100);
-}
-
 function applyLayerToMap(layer) {
   if (!mapHandle || !layer) return;
   const opacity = (layer.opacity ?? 0) / 100;
-  if (layer.id === RADAR_LAYER_ID || layer.id === FORECAST_LAYER_ID) {
-    // Both radar layers act on the same canvas; let
-    // syncRadarLayerForPlayhead pick the one that applies right now.
-    syncRadarLayerForPlayhead();
+  if (layer.id === RADAR_LAYER_ID) {
+    mapHandle.setVisible(layer.visible);
+    mapHandle.setOpacity(opacity);
+  } else if (layer.id === SOURCE_LAYER_ID) {
+    mapHandle.setSourceVisible(layer.visible);
+    mapHandle.setSourceOpacity(opacity);
   } else if (layer.id === VECTORS_LAYER_ID) {
     mapHandle.setVectorsVisible(layer.visible);
     mapHandle.setVectorsOpacity(opacity);
@@ -549,11 +533,6 @@ function renderCurrentFrame() {
   if (!frames || frames.length === 0) return;
   const idx = clampIdx(appState.playheadIdx, frames.length);
   const f = frames[idx];
-  // Match the canvas's visibility + opacity to whichever of the two
-  // radar layers governs this frame's kind. Runs on every scrub so a
-  // toggle of "Precipitation (forecast)" off, for example, makes the
-  // canvas invisible as soon as the playhead crosses T0.
-  syncRadarLayerForPlayhead();
   // Forecast-slot placeholder while forecast hasn't computed yet — leave
   // the previously-rendered frame visible so scrubbing past T0 doesn't go
   // black.
@@ -652,6 +631,40 @@ watch(['unifiedFrames'], () => {
 watch(['playheadIdx'], () => {
   /* node:coverage disable */
   renderCurrentFrame();
+  /* node:coverage enable */
+});
+
+// Source-tile layer follows the playhead: as it crosses each observed
+// frame, swap RainViewer's tile URL template to that frame's path.
+// For interpolated / forecast slots (no published RainViewer tiles
+// exist), use the last observed frame ≤ playhead time instead of going
+// blank — so the source layer reads as "the latest real radar" while
+// the smoothed layer continues advecting the forecast.
+watch(['unifiedFrames', 'playheadIdx', 'radarHistory.data'], () => {
+  /* node:coverage disable */
+  if (!mapHandle) return;
+  const history = appState.radarHistory?.data;
+  const observedFrames = history?.frames;
+  const host = history?.host;
+  const unified = appState.unifiedFrames;
+  if (!host || !observedFrames || observedFrames.length === 0 || !unified || unified.length === 0) {
+    mapHandle.setSourceFrame(null);
+    return;
+  }
+  const idx = clampIdx(appState.playheadIdx, unified.length);
+  const playheadTime = unified[idx]?.time;
+  if (!Number.isFinite(playheadTime)) {
+    mapHandle.setSourceFrame(null);
+    return;
+  }
+  // Pick the latest observed frame whose .time ≤ playhead time.
+  // Manifest frames are ordered ascending in time so we scan from the end.
+  let chosen = observedFrames[0];
+  for (let i = observedFrames.length - 1; i >= 0; i--) {
+    if (observedFrames[i].time <= playheadTime) { chosen = observedFrames[i]; break; }
+  }
+  const url = buildTileUrlTemplate(host, chosen);
+  mapHandle.setSourceFrame(url);
   /* node:coverage enable */
 });
 
