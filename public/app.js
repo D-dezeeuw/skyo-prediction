@@ -30,6 +30,7 @@ import { buildUnifiedFrames, DEFAULT_FRAME_INTERVAL_SEC } from './unify.js';
 import { computeTrend, DEFAULT_TREND_WINDOW } from './trend.js';
 import { buildTopology } from './topology.js';
 import { buildTopologyRenderItems } from './topology-render.js';
+import { prepareTopologyExport, prepareTopologyTimelineExport } from './topology-export.js';
 
 const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
@@ -821,6 +822,108 @@ defineFn('setColorMode', (el) => {
   const mode = el.value;
   if (COLOR_MODES.includes(mode)) setValue('vectorColorMode', mode);
 });
+
+/* node:coverage disable */
+function buildTopologyForFrame(frame, supporting) {
+  if (!frame?.grid) return null;
+  const decoded = appState.radarGrids?.data;
+  const lastObserved = decoded?.[decoded.length - 1];
+  const observedAnchor = lastObserved?.time ?? frame.time;
+  const leadMinutes = Math.round((frame.time - observedAnchor) / 60);
+  const convective = convectiveMask(frame.grid, frame.width, frame.height);
+  return buildTopology(frame.grid, frame.width, frame.height, {
+    ...supporting,
+    convective,
+  }, {
+    frame: {
+      time: new Date(frame.time * 1000).toISOString(),
+      kind: frame.kind,
+      leadMinutes,
+      intervalMinutes: DEFAULT_FRAME_INTERVAL_SEC / 60,
+      tile: { x: TILE_X, y: TILE_Y, z: TILE_Z },
+    },
+  });
+}
+
+function triggerDownload(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Defer revoke until the click has been processed.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+defineFn('exportTopologyFrame', () => {
+  const top = appState.topology?.data?.[0];
+  if (!top) {
+    console.warn('[skyo-prediction] no topology yet — scrub to a frame with rain first');
+    return;
+  }
+  const { filename, content, mimeType } = prepareTopologyExport(top);
+  triggerDownload(filename, content, mimeType);
+});
+
+defineFn('exportTopologyTimeline', () => {
+  const frames = appState.unifiedFrames;
+  if (!frames || frames.length === 0) {
+    console.warn('[skyo-prediction] no frames yet — wait for the radar to load');
+    return;
+  }
+  const supporting = {
+    trend: appState.trend?.data?.[0] ?? null,
+    cape: appState.cape?.data?.[0] ?? null,
+    thunderscore: appState.thunderstorm?.data?.[0] ?? null,
+    probability: appState.ensemble?.data?.[0] ?? null,
+    flow: appState.flowField?.data?.smoothed?.[0] ?? null,
+  };
+  const topologies = [];
+  for (const f of frames) {
+    if (!f?.grid) continue;
+    const t = buildTopologyForFrame(f, supporting);
+    if (t) topologies.push(t);
+  }
+  const { filename, content, mimeType } = prepareTopologyTimelineExport(topologies, {
+    tile: { x: TILE_X, y: TILE_Y, z: TILE_Z },
+  });
+  triggerDownload(filename, content, mimeType);
+});
+
+if (typeof window !== 'undefined') {
+  window.skyo = window.skyo || {};
+  window.skyo.exportTopology = (idx) => {
+    const frames = appState.unifiedFrames;
+    if (!frames || frames.length === 0) return null;
+    const i = clampIdx(Number.isFinite(idx) ? idx : appState.playheadIdx, frames.length);
+    const supporting = {
+      trend: appState.trend?.data?.[0] ?? null,
+      cape: appState.cape?.data?.[0] ?? null,
+      thunderscore: appState.thunderstorm?.data?.[0] ?? null,
+      probability: appState.ensemble?.data?.[0] ?? null,
+      flow: appState.flowField?.data?.smoothed?.[0] ?? null,
+    };
+    return buildTopologyForFrame(frames[i], supporting);
+  };
+  window.skyo.exportTopologyTimeline = () => {
+    const frames = appState.unifiedFrames ?? [];
+    const supporting = {
+      trend: appState.trend?.data?.[0] ?? null,
+      cape: appState.cape?.data?.[0] ?? null,
+      thunderscore: appState.thunderstorm?.data?.[0] ?? null,
+      probability: appState.ensemble?.data?.[0] ?? null,
+      flow: appState.flowField?.data?.smoothed?.[0] ?? null,
+    };
+    return frames
+      .filter((f) => f?.grid)
+      .map((f) => buildTopologyForFrame(f, supporting))
+      .filter(Boolean);
+  };
+}
+/* node:coverage enable */
 
 if (typeof window !== 'undefined') {
   window.appState = appState;
