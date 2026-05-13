@@ -29,13 +29,12 @@ import { buildUnifiedFrames, DEFAULT_FRAME_INTERVAL_SEC } from './unify.js';
 import { computeTrend, DEFAULT_TREND_WINDOW } from './trend.js';
 import { computeStageNeeds } from './pipeline-needs.js';
 
-/** Smoothed canvas heatmap covering the full -2h..+2h unified timeline
- *  (observed + interpolated + advected forecast). The primary view. */
+/** Single precipitation layer:
+ *    past slots   → render RainViewer source tiles (the original)
+ *    forecast     → render our advected canvas (the bare-minimum 2 h
+ *                   future RainViewer doesn't publish)
+ *  Same layer entry governs visibility + opacity for both. */
 const RADAR_LAYER_ID = 'radar-history';
-/** Raw RainViewer source tiles, observed past only. Off by default —
- *  the smoothed layer is the primary view; this is the "see the bytes
- *  as they arrive" diagnostic. */
-const SOURCE_LAYER_ID = 'radar-source';
 const VECTORS_LAYER_ID = 'motion-vectors';
 const TREND_LAYER_ID = 'trend';
 const CONFIDENCE_LAYER_ID = 'confidence';
@@ -69,8 +68,7 @@ const INTERPOLATION_FACTOR = DEFAULT_INTERPOLATION_FACTOR;
 const PLAY_INTERVAL_MS = Math.max(60, Math.floor(FRAME_INTERVAL_MS / INTERPOLATION_FACTOR));
 
 const INITIAL_LAYERS = [
-  { id: RADAR_LAYER_ID, name: 'Precipitation (smoothed)', visible: true, opacity: 90 },
-  { id: SOURCE_LAYER_ID, name: 'Precipitation (source)', visible: false, opacity: 85 },
+  { id: RADAR_LAYER_ID, name: 'Precipitation', visible: true, opacity: 90 },
   { id: TREND_LAYER_ID, name: 'Growth / decay', visible: false, opacity: 65 },
   { id: OMEGA_LAYER_ID, name: 'Convergence (850 hPa)', visible: false, opacity: 65 },
   { id: CAPE_LAYER_ID, name: 'CAPE (instability)', visible: false, opacity: 65 },
@@ -498,9 +496,13 @@ function applyLayerToMap(layer) {
   if (!mapHandle || !layer) return;
   const opacity = (layer.opacity ?? 0) / 100;
   if (layer.id === RADAR_LAYER_ID) {
+    // One layer entry → two render targets (tile for past, canvas for
+    // forecast). The kind-aware sync in renderCurrentFrame turns the
+    // unused target off, but we propagate the latest opacity/visibility
+    // to BOTH here so opening the panel while the playhead is on the
+    // "wrong" target still updates it for when scrubbing flips.
     mapHandle.setVisible(layer.visible);
     mapHandle.setOpacity(opacity);
-  } else if (layer.id === SOURCE_LAYER_ID) {
     mapHandle.setSourceVisible(layer.visible);
     mapHandle.setSourceOpacity(opacity);
   } else if (layer.id === VECTORS_LAYER_ID) {
@@ -533,13 +535,24 @@ function renderCurrentFrame() {
   if (!frames || frames.length === 0) return;
   const idx = clampIdx(appState.playheadIdx, frames.length);
   const f = frames[idx];
-  // Forecast-slot placeholder while forecast hasn't computed yet — leave
-  // the previously-rendered frame visible so scrubbing past T0 doesn't go
-  // black.
-  if (!f.grid) return;
-  if (f.time === lastRenderedTime) return;
-  mapHandle.renderFrame(f.grid, f.width, f.height, f.time);
-  lastRenderedTime = f.time;
+  if (!f) return;
+  // Past slots → show the raw RainViewer tile, clear the canvas.
+  // Forecast slots → render the advected canvas, clear the tile.
+  // The single layer entry's visibility + opacity (applied to both
+  // render targets via applyLayerToMap) controls visibility either way.
+  const isForecast = f.kind === 'forecast';
+  if (isForecast) {
+    mapHandle.setSourceFrame(null);
+    if (!f.grid) return; // forecast hasn't settled yet — keep last render
+    if (f.time === lastRenderedTime) return;
+    mapHandle.renderFrame(f.grid, f.width, f.height, f.time);
+    lastRenderedTime = f.time;
+  } else {
+    // Past: rely on the source-tile watcher to push the right URL.
+    // Clear the canvas so it doesn't double-render over the tile.
+    mapHandle.clearFrame();
+    lastRenderedTime = NaN;
+  }
 }
 
 mountMap(document.getElementById('map'), {
@@ -634,12 +647,13 @@ watch(['playheadIdx'], () => {
   /* node:coverage enable */
 });
 
-// Source-tile layer follows the playhead: as it crosses each observed
-// frame, swap RainViewer's tile URL template to that frame's path.
-// For interpolated / forecast slots (no published RainViewer tiles
-// exist), use the last observed frame ≤ playhead time instead of going
-// blank — so the source layer reads as "the latest real radar" while
-// the smoothed layer continues advecting the forecast.
+// Source-tile layer follows the playhead through PAST slots only:
+//   observed/interpolated → swap RainViewer's tile URL to the latest
+//                           observed frame ≤ playhead time
+//   forecast              → clear the tile (the canvas takes over)
+// Built with smooth=0 + snow=0 so RainViewer doesn't apply client-side
+// palette blending or re-tint snow, both of which produced purple/
+// magenta halos.
 watch(['unifiedFrames', 'playheadIdx', 'radarHistory.data'], () => {
   /* node:coverage disable */
   if (!mapHandle) return;
@@ -652,23 +666,17 @@ watch(['unifiedFrames', 'playheadIdx', 'radarHistory.data'], () => {
     return;
   }
   const idx = clampIdx(appState.playheadIdx, unified.length);
-  const playheadTime = unified[idx]?.time;
-  if (!Number.isFinite(playheadTime)) {
+  const cur = unified[idx];
+  if (!cur || cur.kind === 'forecast') {
     mapHandle.setSourceFrame(null);
     return;
   }
-  // Pick the latest observed frame whose .time ≤ playhead time.
-  // Manifest frames are ordered ascending in time so we scan from the end.
+  const playheadTime = cur.time;
+  // Latest observed frame whose .time ≤ playhead time.
   let chosen = observedFrames[0];
   for (let i = observedFrames.length - 1; i >= 0; i--) {
     if (observedFrames[i].time <= playheadTime) { chosen = observedFrames[i]; break; }
   }
-  // Build the URL with smooth=0 + snow=0 so the source layer reads as
-  // truly raw RainViewer output. smooth=1 blends adjacent palette
-  // stops, which produces magenta/purple halos around cells (the high
-  // end of Universal Blue is magenta→purple at dBZ 65–70). snow=1
-  // re-tints cold precipitation in purple-blue and adds a separate
-  // snow palette on top.
   const url = buildTileUrlTemplate(host, chosen, { smooth: 0, snow: 0 });
   mapHandle.setSourceFrame(url);
   /* node:coverage enable */
@@ -678,6 +686,11 @@ watch(['layers'], () => {
   /* node:coverage disable */
   if (!mapHandle) return;
   for (const layer of appState.layers ?? []) applyLayerToMap(layer);
+  // Re-fire the renderer so toggling the Precipitation layer back on
+  // re-paints the right target (tile or canvas) — applyLayerToMap only
+  // pushes visibility/opacity, not content.
+  lastRenderedTime = NaN;
+  renderCurrentFrame();
   /* node:coverage enable */
 });
 

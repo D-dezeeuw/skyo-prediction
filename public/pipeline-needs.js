@@ -18,10 +18,10 @@
  */
 
 /** Stage → array of layer ids that require it (directly or transitively).
- *  Note: radarHistory + radarGrids are always-on (the source data) and
- *  aren't gated. The "radar-source" tile-overlay layer uses radarHistory
- *  directly (manifest fetch only) so it doesn't appear in any stage's
- *  deps either. */
+ *  radarHistory + radarGrids are always-on (the source data) and aren't
+ *  gated. The "Precipitation" layer (`radar-history`) drives the canvas
+ *  forecast portion of the timeline; raw past tiles come straight from
+ *  the manifest fetch and don't trigger any gated stage. */
 export const STAGE_DEPENDENCIES = Object.freeze({
   // flowField feeds: motion vectors, smooth playback for the radar layer,
   // forecast advection, ensemble, confidence.

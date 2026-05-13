@@ -45,24 +45,21 @@ describe('computeStageNeeds', () => {
     assert.equal(needs.ensemble, false);
   });
 
-  test('only Precipitation (smoothed) visible → every smoothing-chain stage is on (full -2h..+2h timeline)', () => {
+  test('only Precipitation visible → forecast chain on (for the canvas future), interpolated on too', () => {
     const needs = computeStageNeeds([visible('radar-history')]);
-    // Smooth + future-coverage chain:
+    // Forecast chain (for the future-half rendering):
     assert.equal(needs.flowField, true);
-    assert.equal(needs.interpolated, true);
     assert.equal(needs.forecast, true);
     assert.equal(needs.trend, true);
     assert.equal(needs.omega, true);
+    // Past playback uses raw RainViewer tiles directly from the manifest;
+    // interpolated still on for scrubber resolution.
+    assert.equal(needs.interpolated, true);
     // Optional consumer layers stay off:
     assert.equal(needs.cape, false);
     assert.equal(needs.thunderstorm, false);
     assert.equal(needs.ensemble, false);
     assert.equal(needs.confidence, false);
-  });
-
-  test('only Precipitation (source) visible → no stages need to run (uses raw manifest only)', () => {
-    const needs = computeStageNeeds([visible('radar-source'), hidden('radar-history')]);
-    for (const s of STAGES) assert.equal(needs[s], false, `${s} should be false`);
   });
 
   test('only Thunderstorm risk visible → trend + cape + thunderstorm', () => {
