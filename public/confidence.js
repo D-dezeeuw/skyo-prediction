@@ -64,6 +64,43 @@ export function ensembleConfidence(framesA, framesB, width, height) {
 }
 
 /**
+ * Per-step spread: for each forecast slot, compute the per-cell
+ * absolute difference between the two members. Used to animate the
+ * "Forecast uncertainty" overlay so it tracks the playhead instead
+ * of showing a single time-weighted summary for the whole horizon.
+ *
+ * Returns an Array (length = framesA.length) of { width, height, grid }
+ * where grid[p] = |framesA[i][p] - framesB[i][p]|.
+ */
+export function ensembleConfidencePerStep(framesA, framesB, width, height) {
+  if (!Array.isArray(framesA) || !Array.isArray(framesB)) {
+    throw new Error('ensembleConfidencePerStep: framesA and framesB must be arrays of Float32Array');
+  }
+  if (framesA.length !== framesB.length) {
+    throw new Error(`ensembleConfidencePerStep: framesA.length ${framesA.length} != framesB.length ${framesB.length}`);
+  }
+  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+    throw new Error('ensembleConfidencePerStep: width and height must be positive integers');
+  }
+  const n = width * height;
+  const out = [];
+  for (let i = 0; i < framesA.length; i++) {
+    const a = framesA[i];
+    const b = framesB[i];
+    if (a.length !== n || b.length !== n) {
+      throw new Error(`ensembleConfidencePerStep: frame ${i} length mismatch (a=${a.length}, b=${b.length}, expected ${n})`);
+    }
+    const grid = new Float32Array(n);
+    for (let p = 0; p < n; p++) {
+      const d = a[p] - b[p];
+      grid[p] = d < 0 ? -d : d;
+    }
+    out.push({ width, height, grid });
+  }
+  return out;
+}
+
+/**
  * Sequential colormap: low spread = transparent, high spread → warm.
  * Uses a single hue ramp (yellow → orange → red) since the quantity is
  * unsigned (it's an RMS, always ≥ 0). Returns an RGBA Uint8ClampedArray.

@@ -4,6 +4,7 @@ import {
   DEFAULT_CONFIDENCE_SCALE,
   DEFAULT_CONFIDENCE_MAX_ALPHA,
   ensembleConfidence,
+  ensembleConfidencePerStep,
   encodeConfidenceToRgba,
 } from '../public/confidence.js';
 
@@ -136,5 +137,68 @@ describe('encodeConfidenceToRgba', () => {
     const out = encodeConfidenceToRgba(grid, 3, 3);
     assert.ok(out instanceof Uint8ClampedArray);
     assert.equal(out.length, 36);
+  });
+});
+
+describe('ensembleConfidencePerStep', () => {
+  test('returns one grid per forecast step, in input order', () => {
+    const a = [
+      Float32Array.from([1, 2, 3, 4]),
+      Float32Array.from([5, 6, 7, 8]),
+      Float32Array.from([9, 10, 11, 12]),
+    ];
+    const b = [
+      Float32Array.from([0, 2, 4, 4]),
+      Float32Array.from([5, 8, 7, 10]),
+      Float32Array.from([10, 10, 14, 12]),
+    ];
+    const out = ensembleConfidencePerStep(a, b, 2, 2);
+    assert.equal(out.length, 3);
+    for (const e of out) {
+      assert.equal(e.width, 2);
+      assert.equal(e.height, 2);
+      assert.equal(e.grid.length, 4);
+    }
+  });
+
+  test('per-step value is the absolute per-cell difference', () => {
+    const a = [Float32Array.from([10, 20, 30, 40])];
+    const b = [Float32Array.from([12, 18, 30, 50])];
+    const out = ensembleConfidencePerStep(a, b, 2, 2);
+    assert.deepEqual([...out[0].grid], [2, 2, 0, 10]);
+  });
+
+  test('agreement (a === b) → zero grid', () => {
+    const a = [Float32Array.from([5, 5, 5, 5])];
+    const b = [Float32Array.from([5, 5, 5, 5])];
+    const out = ensembleConfidencePerStep(a, b, 2, 2);
+    for (const v of out[0].grid) assert.equal(v, 0);
+  });
+
+  test('empty input → empty output', () => {
+    const out = ensembleConfidencePerStep([], [], 4, 4);
+    assert.deepEqual(out, []);
+  });
+
+  test('throws on non-array inputs', () => {
+    assert.throws(() => ensembleConfidencePerStep(null, [], 2, 2), /arrays/);
+    assert.throws(() => ensembleConfidencePerStep([], 'no', 2, 2), /arrays/);
+  });
+
+  test('throws on member-length mismatch', () => {
+    const a = [new Float32Array(4)];
+    const b = [new Float32Array(4), new Float32Array(4)];
+    assert.throws(() => ensembleConfidencePerStep(a, b, 2, 2), /length .* !=/);
+  });
+
+  test('throws on invalid dimensions', () => {
+    assert.throws(() => ensembleConfidencePerStep([], [], 0, 4), /positive integers/);
+    assert.throws(() => ensembleConfidencePerStep([], [], 4, 0), /positive integers/);
+  });
+
+  test('throws on frame-grid length mismatch', () => {
+    const a = [new Float32Array(3)];
+    const b = [new Float32Array(4)];
+    assert.throws(() => ensembleConfidencePerStep(a, b, 2, 2), /frame 0/);
   });
 });
