@@ -31,6 +31,7 @@ import { computeTrend, DEFAULT_TREND_WINDOW } from './trend.js';
 import { buildTopology } from './topology.js';
 import { buildTopologyRenderItems } from './topology-render.js';
 import { prepareTopologyExport, prepareTopologyTimelineExport } from './topology-export.js';
+import { computeStageNeeds } from './pipeline-needs.js';
 
 const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
@@ -386,6 +387,11 @@ const refetchFlow = addAsync('flowField', logged('flowField', async () => {
 // ─── 3. Computed selectors ─────────────────────────────────────────────
 computed('playIcon', ['playing'], (s) => (s.playing ? '⏸' : '▶'));
 
+// Demand-driven gating: which pipeline stages should currently run?
+// Drives every refetch* trigger below. Layers that aren't visible don't
+// pull on their upstream stages.
+computed('stageNeeds', ['layers'], (s) => computeStageNeeds(s.layers));
+
 // Unified frame array: interpolated history (observed + sub-frames) +
 // forecast frames, in chronological order. The scrubber and the map
 // renderer iterate this single list; the .kind tag distinguishes
@@ -632,36 +638,49 @@ watch(['radarHistory.data'], () => {
   /* node:coverage enable */
 });
 
-watch(['radarGrids.data'], () => {
+// Stage triggers are gated on stageNeeds: an addAsync stage only fires
+// if at least one visible layer needs its output. Adding 'stageNeeds'
+// to the watch deps means toggling a layer ON will retry any missing
+// stages that the freshly-visible layer needs.
+function readyForRefetch(stageKey) {
+  const s = appState[stageKey];
+  return !s?.data && !s?.loading;
+}
+
+watch(['radarGrids.data', 'stageNeeds'], () => {
   /* node:coverage disable */
-  if ((appState.radarGrids?.data?.length ?? 0) >= 2) {
-    refetchFlow();
-    refetchTrend();
-    refetchOmega();
-    refetchCape();
-  }
+  if ((appState.radarGrids?.data?.length ?? 0) < 2) return;
+  const needs = appState.stageNeeds ?? {};
+  if (needs.flowField && readyForRefetch('flowField')) refetchFlow();
+  if (needs.trend && readyForRefetch('trend')) refetchTrend();
+  if (needs.omega && readyForRefetch('omega')) refetchOmega();
+  if (needs.cape && readyForRefetch('cape')) refetchCape();
   /* node:coverage enable */
 });
 
-// Thunderstorm fusion fires when any of its three inputs updates.
-watch(['radarGrids.data', 'trend.data', 'cape.data'], () => {
+// Thunderstorm fusion fires when its inputs update — and only if a
+// visible layer asks for thunderstorm output.
+watch(['radarGrids.data', 'trend.data', 'cape.data', 'stageNeeds'], () => {
   /* node:coverage disable */
-  if ((appState.radarGrids?.data?.length ?? 0) >= 1) refetchThunderstorm();
+  if ((appState.radarGrids?.data?.length ?? 0) < 1) return;
+  if (appState.stageNeeds?.thunderstorm) refetchThunderstorm();
   /* node:coverage enable */
 });
 
-// Re-run forecast + interpolation + confidence + ensemble when flow OR
-// trend OR omega updates. Forecast folds all three into its growth
-// signal; ensemble only depends on flow but it's cheap to re-run on
-// trend/omega updates too (rare events).
-watch(['flowField.data', 'trend.data', 'omega.data'], () => {
+// Forecast + interpolation + confidence + ensemble fire when flow / trend
+// / omega update. Each gate is independent so e.g. turning on just the
+// Probability layer fires only ensemble (not confidence).
+watch(['flowField.data', 'trend.data', 'omega.data', 'stageNeeds'], () => {
   /* node:coverage disable */
+  const needs = appState.stageNeeds ?? {};
   if (appState.flowField?.data?.smoothed?.[0]) {
-    refetchForecast();
-    refetchEnsemble();
+    if (needs.forecast) refetchForecast();
+    if (needs.ensemble) refetchEnsemble();
   }
-  if (appState.flowField?.data?.pairs) refetchInterpolated();
-  if (appState.flowField?.data?.pairs) refetchConfidence();
+  if (appState.flowField?.data?.pairs) {
+    if (needs.interpolated) refetchInterpolated();
+    if (needs.confidence) refetchConfidence();
+  }
   /* node:coverage enable */
 });
 
@@ -754,10 +773,16 @@ watch(['ensemble.data'], () => {
 
 // Topology: bust the per-frame cache whenever any input that feeds it
 // changes, then trigger a recompute for the current playhead frame AND
-// kick off an idle pre-warm so subsequent scrubs are instant.
-watch(['radarGrids.data', 'trend.data', 'cape.data', 'thunderstorm.data', 'ensemble.data', 'flowField.data', 'unifiedFrames'], () => {
+// kick off an idle pre-warm so subsequent scrubs are instant. Only runs
+// when the Cloud topology layer is visible — otherwise we'd churn
+// through ~48 builds for nothing.
+watch(['radarGrids.data', 'trend.data', 'cape.data', 'thunderstorm.data', 'ensemble.data', 'flowField.data', 'unifiedFrames', 'stageNeeds'], () => {
   /* node:coverage disable */
   topologyCache.clear();
+  if (!appState.stageNeeds?.topology) {
+    cancelTopologyPrewarm();
+    return;
+  }
   if (appState.unifiedFrames?.length) {
     refetchTopology();
     startTopologyPrewarm();
@@ -810,9 +835,11 @@ function stepTopologyPrewarm() {
 }
 /* node:coverage enable */
 
-// Compute topology for the new playhead frame on every scrub.
+// Compute topology for the new playhead frame on every scrub — only when
+// the topology layer is visible.
 watch(['playheadIdx'], () => {
   /* node:coverage disable */
+  if (!appState.stageNeeds?.topology) return;
   if (appState.unifiedFrames?.length) refetchTopology();
   /* node:coverage enable */
 });
