@@ -205,11 +205,53 @@ describe('advectStep — growth/decay (trend)', () => {
     for (const v of out) assert.ok(Math.abs(v - 6) < 1e-9);
   });
 
-  test('negative trend clamped at zero (no negative rain)', () => {
+  test('negative trend never drives a cell below zero (no negative rain)', () => {
+    // Large negative trend gets capped per step at -25% of the current value
+    // (see MAX_DECAY_FRACTION), so even a runaway trend can never push a cell
+    // below zero in one step. After many advection steps a cell decays toward
+    // (but never reaches) zero.
     const input = makeGrid(w, h, () => 1);
     const flow = uniformFlow(w, h, 4, 0, 0);
-    const out = advectStep(input, flow, w, h, { trend: uniformTrend(-10), dt: 1 });
-    for (const v of out) assert.equal(v, 0);
+    let current = input;
+    for (let i = 0; i < 20; i++) {
+      current = advectStep(current, flow, w, h, { trend: uniformTrend(-10), dt: 1 });
+      for (const v of current) assert.ok(v >= 0, `step ${i}: ${v}`);
+    }
+  });
+
+  test('per-step decay cap protects light rain from being wiped out (the bug)', () => {
+    // The forecast pipeline was killing light-rain regions because omega-
+    // derived decay (~ -0.5 mm/h/interval) over 12 steps subtracted 6 mm/h
+    // from cells starting at 0.2 mm/h. The fix caps per-step decay so light
+    // rain decays proportionally and never disappears in one step.
+    const input = makeGrid(w, h, () => 0.2);
+    const flow = uniformFlow(w, h, 4, 0, 0);
+    let current = input;
+    for (let i = 0; i < 12; i++) {
+      current = advectStep(current, flow, w, h, { trend: uniformTrend(-0.5), dt: 1, trendStrength: 0.5 });
+    }
+    // Without the cap, every cell would be 0. With the cap (25% per step),
+    // after 12 steps cells are at 0.2 × 0.75^12 ≈ 0.0063 — small but non-zero.
+    for (const v of current) assert.ok(v > 0, `expected non-zero, got ${v}`);
+    for (const v of current) assert.ok(v < 0.2, `expected decayed, got ${v}`);
+  });
+
+  test('heavy-rain decay is effectively unchanged (cap does not trigger)', () => {
+    // For heavy rain (30 mm/h) the absolute trend (-0.25 mm/h/step) is well
+    // below the 25%-of-value cap (-7.5 mm/h/step), so the cap is inactive.
+    const input = makeGrid(w, h, () => 30);
+    const flow = uniformFlow(w, h, 4, 0, 0);
+    const out = advectStep(input, flow, w, h, { trend: uniformTrend(-0.5), trendStrength: 0.5 });
+    // 30 + (-0.5 * 1 * 0.5) = 29.75; cap would only kick in at -7.5
+    for (const v of out) assert.ok(Math.abs(v - 29.75) < 1e-6, `got ${v}`);
+  });
+
+  test('positive trend (growth) is uncapped', () => {
+    const input = makeGrid(w, h, () => 0.1);
+    const flow = uniformFlow(w, h, 4, 0, 0);
+    const out = advectStep(input, flow, w, h, { trend: uniformTrend(10), dt: 1 });
+    // 0.1 + 10 * 1 = 10.1 — full delta applied, no cap on growth
+    for (const v of out) assert.ok(Math.abs(v - 10.1) < 1e-6);
   });
 
   test('trendStrength scales the effective growth', () => {

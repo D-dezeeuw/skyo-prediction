@@ -19,6 +19,10 @@
 
 /** Default sub-pixel sampling tolerance for boundary handling. */
 const EPS = 1e-9;
+/** Max fraction of a cell's current value that trend-driven decay can
+ *  remove in one step. Protects light-rain regions from being wiped out
+ *  by omega-derived absolute decay terms over 12 forecast steps. */
+export const MAX_DECAY_FRACTION = 0.25;
 
 export function advectStep(input, flow, width, height, options = {}) {
   const { dt = 1, trend = null, trendStrength = 1 } = options;
@@ -49,8 +53,18 @@ export function advectStep(input, flow, width, height, options = {}) {
       // keeps gradients smooth across pixels.
       if (trendGrid) {
         const trendRate = bilinearSample(trendGrid, width, height, sx, sy);
-        value += trendRate * trendDt;
-        // Clamp to non-negative mm/h — negative rain isn't a thing.
+        const delta = trendRate * trendDt;
+        // Cap per-step DECAY at MAX_DECAY_FRACTION of the current value so
+        // light rain (e.g. 0.2 mm/h cells with omega-driven decay terms ~
+        // -0.5 mm/h/interval) doesn't get wiped out in a single step, which
+        // was causing visible holes inside forecast clouds where the
+        // observed history had light-blue drizzle bands. Heavy-rain decay
+        // is effectively unchanged: a 30 mm/h cell with delta=-0.25 stays
+        // uncapped because |delta| < 25% × 30 = 7.5.
+        const cappedDelta = delta >= 0
+          ? delta
+          : Math.max(delta, -MAX_DECAY_FRACTION * value);
+        value += cappedDelta;
         if (value < 0) value = 0;
       }
       out[y * width + x] = value;
