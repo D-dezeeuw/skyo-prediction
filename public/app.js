@@ -15,6 +15,7 @@ import { buildArrows, COLOR_MODES } from './vectors.js';
 import { forecast as runForecast } from './advect.js';
 import { interpolateHistory, DEFAULT_INTERPOLATION_FACTOR } from './interpolate.js';
 import { buildUnifiedFrames, DEFAULT_FRAME_INTERVAL_SEC } from './unify.js';
+import { computeTrend, DEFAULT_TREND_WINDOW } from './trend.js';
 
 const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
@@ -86,6 +87,15 @@ function logged(label, fn) {
     }
   };
 }
+
+const refetchTrend = addAsync('trend', logged('trend', async () => {
+  const decoded = appState.radarGrids?.data;
+  if (!decoded || decoded.length < 2) return null;
+  await Promise.resolve();
+  const t0 = performance.now();
+  const field = computeTrend(decoded, { window: DEFAULT_TREND_WINDOW });
+  return field ? { ...field, computeMs: performance.now() - t0 } : null;
+}));
 
 const refetchInterpolated = addAsync('interpolated', logged('interpolated', async () => {
   const decoded = appState.radarGrids?.data;
@@ -213,6 +223,15 @@ computed('interpStatus', ['interpolated'], (s) => {
   return 'idle';
 });
 
+computed('trendStatus', ['trend'], (s) => {
+  const t = s.trend;
+  if (!t) return 'idle';
+  if (t.loading) return 'computing';
+  if (t.error) return `error: ${t.error}`;
+  if (t.data) return `${t.data.width}×${t.data.height} over ${t.data.window} frames`;
+  return 'idle';
+});
+
 // ─── 4. Map handle (lazy) + bridge between state and Leaflet ───────────
 /* node:coverage disable */
 let mapHandle = null;
@@ -267,7 +286,10 @@ watch(['radarHistory.data'], () => {
 
 watch(['radarGrids.data'], () => {
   /* node:coverage disable */
-  if ((appState.radarGrids?.data?.length ?? 0) >= 2) refetchFlow();
+  if ((appState.radarGrids?.data?.length ?? 0) >= 2) {
+    refetchFlow();
+    refetchTrend();
+  }
   /* node:coverage enable */
 });
 
