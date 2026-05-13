@@ -13,6 +13,7 @@ import {
 } from './flow.js';
 import { buildArrows, COLOR_MODES } from './vectors.js';
 import { forecast as runForecast } from './advect.js';
+import { interpolateHistory, DEFAULT_INTERPOLATION_FACTOR } from './interpolate.js';
 
 const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
@@ -29,6 +30,9 @@ const FLOW_SEARCH_RADIUS = 8;
 const ARROW_INTENSITY_THRESHOLD = 0.05;
 // 12 forecast frames at 10-minute intervals = 2 hours of nowcast.
 const FORECAST_FRAME_COUNT = 12;
+// In-between frames per observed-frame interval. 4 → 60 fps over 10 min;
+// playback feels smooth instead of slideshow-like.
+const INTERPOLATION_FACTOR = DEFAULT_INTERPOLATION_FACTOR;
 
 // Layers are plain state objects so the template's data-model can write
 // directly to `appState.layers[i].visible` / `.opacity` — no registry
@@ -71,6 +75,20 @@ const refetchGrids = addAsync('radarGrids', async () => {
   console.info(`[skyo-prediction] decoded ${decoded.length} / ${data.frames.length} frames in ${(performance.now() - t0).toFixed(0)} ms`);
   return decoded;
   /* node:coverage enable */
+});
+
+const refetchInterpolated = addAsync('interpolated', async () => {
+  const decoded = appState.radarGrids?.data;
+  const pairs = appState.flowField?.data?.pairs;
+  if (!decoded || decoded.length < 2 || !pairs || pairs.length !== decoded.length - 1) return null;
+  await Promise.resolve();
+  const t0 = performance.now();
+  const frames = interpolateHistory(decoded, pairs, INTERPOLATION_FACTOR);
+  return {
+    frames,
+    factor: INTERPOLATION_FACTOR,
+    computeMs: performance.now() - t0,
+  };
 });
 
 const refetchForecast = addAsync('forecast', async () => {
@@ -160,6 +178,15 @@ computed('forecastStatus', ['forecast'], (s) => {
   return 'idle';
 });
 
+computed('interpStatus', ['interpolated'], (s) => {
+  const i = s.interpolated;
+  if (!i) return 'idle';
+  if (i.loading) return 'computing';
+  if (i.error) return `error: ${i.error.message}`;
+  if (i.data) return `${i.data.frames.length} frames (×${i.data.factor})`;
+  return 'idle';
+});
+
 // ─── 4. Map handle (lazy) + bridge between state and Leaflet ───────────
 /* node:coverage disable */
 let mapHandle = null;
@@ -223,10 +250,12 @@ watch(['radarGrids.data'], () => {
   /* node:coverage enable */
 });
 
-// Once flow finishes, advect the latest decoded frame forward N steps.
+// Once flow finishes, advect the latest decoded frame forward N steps
+// and interleave per-pair sub-frames for smooth playback.
 watch(['flowField.data'], () => {
   /* node:coverage disable */
   if (appState.flowField?.data?.smoothed) refetchForecast();
+  if (appState.flowField?.data?.pairs) refetchInterpolated();
   /* node:coverage enable */
 });
 
