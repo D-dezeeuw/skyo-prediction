@@ -15,6 +15,12 @@
  */
 
 export const DEFAULT_TREND_WINDOW = 4;
+/** Trend-magnitude cutoff for the colormap: anything beyond ±scale is
+ *  clamped to ±1 (full saturation). Units are mm/h per frame-interval. */
+export const DEFAULT_TREND_COLORMAP_SCALE = 1.0;
+/** Maximum alpha for non-zero trend pixels (0..255). 200 ≈ 0.78 → the
+ *  underlying radar stays partly visible. */
+export const DEFAULT_TREND_MAX_ALPHA = 200;
 
 export function computeTrend(history, options = {}) {
   const { window = DEFAULT_TREND_WINDOW } = options;
@@ -58,4 +64,37 @@ export function computeTrend(history, options = {}) {
   }
 
   return { width: w, height: h, window: k, grid };
+}
+
+/**
+ * Diverging colormap. Positive trend (growth) → red; negative
+ * (decay) → blue; near-zero → transparent. Alpha scales with
+ * |trend|/scale so weak signals are faint, strong signals are bold.
+ * Returns an RGBA Uint8ClampedArray suitable for ImageData.data.set().
+ */
+export function encodeTrendToRgba(grid, width, height, options = {}) {
+  const { scale = DEFAULT_TREND_COLORMAP_SCALE, maxAlpha = DEFAULT_TREND_MAX_ALPHA } = options;
+  if (!(scale > 0)) throw new Error('encodeTrendToRgba: scale must be positive');
+  const expected = width * height;
+  if (grid.length !== expected) {
+    throw new Error(`encodeTrendToRgba: grid length ${grid.length} != width*height ${expected}`);
+  }
+  const out = new Uint8ClampedArray(width * height * 4);
+  const epsilon = 0.01;
+  for (let p = 0, i = 0; p < grid.length; p++, i += 4) {
+    const v = grid[p];
+    if (!Number.isFinite(v)) continue;
+    let t = v / scale;
+    if (t > 1) t = 1;
+    if (t < -1) t = -1;
+    if (Math.abs(t) < epsilon) continue; // RGBA already zero
+    if (t > 0) {
+      out[i] = 240; out[i + 1] = 80; out[i + 2] = 60;
+      out[i + 3] = t * maxAlpha;
+    } else {
+      out[i] = 60; out[i + 1] = 130; out[i + 2] = 240;
+      out[i + 3] = -t * maxAlpha;
+    }
+  }
+  return out;
 }
