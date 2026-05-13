@@ -45,19 +45,41 @@ describe('computeStageNeeds', () => {
     assert.equal(needs.ensemble, false);
   });
 
-  test('only Historical radar visible → flowField/trend/omega/interp/forecast needed (for future frames + smooth playback) but NOT thunderstorm / ensemble', () => {
-    const needs = computeStageNeeds([visible('radar-history'), hidden('thunderstorm'), hidden('motion-vectors')]);
-    // Stages the radar layer needs (for forecast + interpolation):
+  test('only Precipitation (past) visible → flowField + interpolated, but NOT forecast/trend/omega', () => {
+    const needs = computeStageNeeds([visible('radar-history'), hidden('radar-forecast')]);
     assert.equal(needs.flowField, true);
-    assert.equal(needs.trend, true);
-    assert.equal(needs.omega, true);
     assert.equal(needs.interpolated, true);
-    assert.equal(needs.forecast, true);
-    // Stages the radar layer does NOT need:
+    // Past-only doesn't need future-frame pipelines:
+    assert.equal(needs.forecast, false);
+    assert.equal(needs.trend, false);
+    assert.equal(needs.omega, false);
     assert.equal(needs.cape, false);
     assert.equal(needs.thunderstorm, false);
     assert.equal(needs.ensemble, false);
     assert.equal(needs.confidence, false);
+  });
+
+  test('only Precipitation (forecast) visible → flowField + trend + omega + forecast', () => {
+    const needs = computeStageNeeds([visible('radar-forecast'), hidden('radar-history')]);
+    assert.equal(needs.flowField, true);
+    assert.equal(needs.trend, true);
+    assert.equal(needs.omega, true);
+    assert.equal(needs.forecast, true);
+    // Forecast doesn't need interpolated (which is for past smooth-scrubbing)
+    assert.equal(needs.interpolated, false);
+    assert.equal(needs.cape, false);
+    assert.equal(needs.thunderstorm, false);
+    assert.equal(needs.ensemble, false);
+    assert.equal(needs.confidence, false);
+  });
+
+  test('both Precipitation layers visible → past + future stages all on', () => {
+    const needs = computeStageNeeds([visible('radar-history'), visible('radar-forecast')]);
+    assert.equal(needs.flowField, true);
+    assert.equal(needs.interpolated, true);
+    assert.equal(needs.forecast, true);
+    assert.equal(needs.trend, true);
+    assert.equal(needs.omega, true);
   });
 
   test('only Thunderstorm risk visible → trend + cape + thunderstorm', () => {

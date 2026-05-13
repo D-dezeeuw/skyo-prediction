@@ -122,6 +122,29 @@ describe('interpolateHistory', () => {
     }
   });
 
+  test('morph blend preserves stationary peaks (no midsection erosion)', () => {
+    const w = 16, h = 16;
+    // Two identical frames with a 3×3 hot block at the centre, value 30
+    const mk = () => makeGrid(w, h, (x, y) => (x >= 7 && x <= 9 && y >= 7 && y <= 9 ? 30 : 0));
+    const a = mk();
+    const b = mk();
+    const flow = uniformFlow(w, h, 4, 0, 0); // no motion
+    const out = interpolateHistory(
+      [
+        { time: 0, grid: a, width: w, height: h },
+        { time: 600, grid: b, width: w, height: h },
+      ],
+      [flow],
+      4,
+    );
+    // 4 outputs: observed, interp@0.25, interp@0.5, interp@0.75 (then b)
+    // Every interpolated frame should retain the peak value 30 at the centre
+    for (let k = 1; k <= 3; k++) {
+      const v = out[k].grid[8 * w + 8];
+      assert.equal(v, 30, `frame ${k} centre dropped to ${v}`);
+    }
+  });
+
   test('intermediate frames at dt=0.5 fall midway under uniform translation', () => {
     const w = 16, h = 16;
     // Spike at x=4

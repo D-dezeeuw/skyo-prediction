@@ -20,8 +20,8 @@ describe('exports', () => {
     assert.equal(OMEGA_GRID_DIM, 5);
   });
   test('DEFAULT_OMEGA_SCALE / DEFAULT_OMEGA_MAX_ALPHA are sensible', () => {
-    assert.equal(DEFAULT_OMEGA_SCALE, 0.3);
-    assert.equal(DEFAULT_OMEGA_MAX_ALPHA, 180);
+    assert.equal(DEFAULT_OMEGA_SCALE, 0.12);
+    assert.equal(DEFAULT_OMEGA_MAX_ALPHA, 230);
   });
 });
 
@@ -181,35 +181,45 @@ describe('upsampleOmegaField', () => {
 });
 
 describe('encodeOmegaToRgba', () => {
-  test('zero / near-zero → transparent', () => {
-    const grid = new Float32Array([0, 0.005, -0.005, 0]);
+  test('exact zero → transparent; sub-epsilon values also skipped', () => {
+    // |t| below the 0.02 epsilon stays at alpha 0. With scale 0.12 the
+    // epsilon corresponds to omega ≈ 0.0024 m/s.
+    const grid = new Float32Array([0, 0.0023, -0.0023, 0]);
     const out = encodeOmegaToRgba(grid, 2, 2);
     for (let i = 3; i < out.length; i += 4) assert.equal(out[i], 0);
   });
 
-  test('negative (rising/growth) → green', () => {
+  test('negative (rising/growth) → vivid mint green', () => {
     const grid = new Float32Array([-0.3]);
     const out = encodeOmegaToRgba(grid, 1, 1);
-    assert.equal(out[0], 60);
-    assert.equal(out[1], 200);
-    assert.equal(out[2], 90);
+    assert.equal(out[0], 90);
+    assert.equal(out[1], 230);
+    assert.equal(out[2], 130);
     assert.ok(out[3] > 0);
   });
 
-  test('positive (sinking/decay) → purple', () => {
+  test('positive (sinking/decay) → vivid magenta purple', () => {
     const grid = new Float32Array([0.3]);
     const out = encodeOmegaToRgba(grid, 1, 1);
-    assert.equal(out[0], 160);
-    assert.equal(out[1], 80);
-    assert.equal(out[2], 220);
+    assert.equal(out[0], 190);
+    assert.equal(out[1], 90);
+    assert.equal(out[2], 240);
     assert.ok(out[3] > 0);
   });
 
-  test('beyond ±scale clamps to t=±1 (full alpha)', () => {
+  test('beyond ±scale clamps to t=±1 (max alpha)', () => {
     const grid = new Float32Array([10, -10]);
-    const out = encodeOmegaToRgba(grid, 2, 1, { scale: 0.3, maxAlpha: 200 });
+    const out = encodeOmegaToRgba(grid, 2, 1, { scale: 0.3, maxAlpha: 200, minAlpha: 70 });
     assert.equal(out[3], 200);
     assert.equal(out[7], 200);
+  });
+
+  test('weak omega still renders with at least minAlpha (no near-invisible washes)', () => {
+    // Just above the epsilon (0.02) cutoff: |t| = 0.03 (scale 0.12 → v = 0.0036)
+    const grid = new Float32Array([0.005]);
+    const out = encodeOmegaToRgba(grid, 1, 1);
+    // Expect alpha close to minAlpha (70), not vanishingly small
+    assert.ok(out[3] >= 70, `expected at least minAlpha 70, got ${out[3]}`);
   });
 
   test('non-finite values render as transparent', () => {

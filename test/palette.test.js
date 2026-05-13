@@ -12,6 +12,7 @@ import {
   RAIN_FADE_CEILING_DBZ,
   decodeRgbaToRainRate,
   encodeRainRateToRgba,
+  bilinearUpsample,
 } from '../public/palette.js';
 
 describe('PALETTE_STOPS', () => {
@@ -253,5 +254,57 @@ describe('encodeRainRateToRgba', () => {
     const out = encodeRainRateToRgba(grid, 3, 3);
     assert.ok(out instanceof Uint8ClampedArray);
     assert.equal(out.length, 36);
+  });
+});
+
+describe('bilinearUpsample', () => {
+  test('factor=1 short-circuits and returns the same grid reference', () => {
+    const grid = Float32Array.from([1, 2, 3, 4]);
+    const out = bilinearUpsample(grid, 2, 2, 1);
+    assert.equal(out, grid);
+  });
+
+  test('factor=2 quadruples the cell count and interpolates between corners', () => {
+    const grid = Float32Array.from([0, 10, 0, 10]); // 2×2: top row 0,10; bottom row 0,10
+    const out = bilinearUpsample(grid, 2, 2, 2);
+    assert.equal(out.length, 16);
+    // The interior column (x=1, x=2) should hold mid values between 0 and 10
+    // Specifically the four output cells in the top-left 2x2 of the upsampled
+    // grid (covering source (0..1) × (0..1)) should range smoothly 0..10 in x.
+    assert.equal(out[0], 0);    // (0,0) → source (0,0) = 0
+    assert.ok(out[1] > 0 && out[1] < 10, `out[1]=${out[1]}`);  // (1,0) interpolated
+    assert.ok(Math.abs(out[2] - 10) < 1e-6 || Math.abs(out[2] - 10) < 1e-6); // (2,0)
+  });
+
+  test('factor=2 preserves source corner values at the upsampled corner positions', () => {
+    const grid = Float32Array.from([5, 20, 30, 40]);
+    const out = bilinearUpsample(grid, 2, 2, 2);
+    // Source (0,0) = 5 → out (0,0) = 5
+    assert.equal(out[0], 5);
+    // Source (1,0) = 20 → out (2,0) = 20 (since at integer-multiple coords)
+    assert.equal(out[2], 20);
+    // Source (0,1) = 30 → out (0,2) = 30
+    assert.equal(out[2 * 4 + 0], 30);
+    // Source (1,1) = 40 → out (2,2) = 40
+    assert.equal(out[2 * 4 + 2], 40);
+  });
+
+  test('factor=2 on a uniform field stays uniform', () => {
+    const grid = new Float32Array(16).fill(7);
+    const out = bilinearUpsample(grid, 4, 4, 2);
+    for (const v of out) assert.equal(v, 7);
+  });
+
+  test('factor=4 expands by 16× cell count', () => {
+    const out = bilinearUpsample(new Float32Array(4), 2, 2, 4);
+    assert.equal(out.length, 64);
+  });
+
+  test('throws on bad inputs', () => {
+    assert.throws(() => bilinearUpsample(null, 2, 2, 2), /grid length/);
+    assert.throws(() => bilinearUpsample(new Float32Array(3), 2, 2, 2), /grid length/);
+    assert.throws(() => bilinearUpsample(new Float32Array(4), 0, 2, 2), /positive integers/);
+    assert.throws(() => bilinearUpsample(new Float32Array(4), 2, 2, 0), /positive integer/);
+    assert.throws(() => bilinearUpsample(new Float32Array(4), 2, 2, 1.5), /positive integer/);
   });
 });

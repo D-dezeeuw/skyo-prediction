@@ -123,6 +123,56 @@ export function dbzToRgbSmooth(dbz) {
   return null;
 }
 
+/**
+ * Bilinear-upsample a rain-rate grid by an integer factor. Used at
+ * canvas-render time to give the radar overlay enough pixels that the
+ * PNG → image-overlay path doesn't show the source-pixel grid even at
+ * close map zooms. Cost is O(factor² × w × h) so factor=2 is the sweet
+ * spot for 512² source grids — 4× more pixels for the encoder, but the
+ * compute fits comfortably inside the render budget.
+ *
+ * Edges are clamped (source[w] aliases to source[w-1]).
+ */
+export function bilinearUpsample(grid, width, height, factor = 2) {
+  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+    throw new Error('bilinearUpsample: width and height must be positive integers');
+  }
+  if (!Number.isInteger(factor) || factor < 1) {
+    throw new Error('bilinearUpsample: factor must be a positive integer');
+  }
+  if (!grid || grid.length !== width * height) {
+    throw new Error('bilinearUpsample: grid length does not match width*height');
+  }
+  if (factor === 1) return grid;
+  const W = width * factor;
+  const H = height * factor;
+  const out = new Float32Array(W * H);
+  const lastX = width - 1;
+  const lastY = height - 1;
+  for (let y = 0; y < H; y++) {
+    const sy = y / factor;
+    const y0 = Math.min(lastY, Math.floor(sy));
+    const y1 = Math.min(lastY, y0 + 1);
+    const fy = sy - y0;
+    const wy0 = 1 - fy;
+    const row0 = y0 * width;
+    const row1 = y1 * width;
+    const outRow = y * W;
+    for (let x = 0; x < W; x++) {
+      const sx = x / factor;
+      const x0 = Math.min(lastX, Math.floor(sx));
+      const x1 = Math.min(lastX, x0 + 1);
+      const fx = sx - x0;
+      const a = grid[row0 + x0];
+      const b = grid[row0 + x1];
+      const c = grid[row1 + x0];
+      const d = grid[row1 + x1];
+      out[outRow + x] = wy0 * ((1 - fx) * a + fx * b) + fy * ((1 - fx) * c + fx * d);
+    }
+  }
+  return out;
+}
+
 /** Lowest dBZ stop in the rain ramp — below this, alpha fades to zero
  *  rather than snapping, so cloud edges blend into the basemap instead
  *  of producing a hard rim of opaque cyan around very light rain. */
