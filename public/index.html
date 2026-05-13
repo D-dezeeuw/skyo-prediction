@@ -74,7 +74,21 @@
         <span data-if="frameCount">
           Frame {{playheadIdx}} / {{frameCount - 1}}
           · <code>{{currentFrameTime}}</code>
-          · <span class="kind-badge" :class="currentFrameKind">{{currentFrameKind}}</span>
+          · <span class="kind-icon observed" data-if="currentFrameKind === 'observed'" title="Observed radar">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                <circle cx="7" cy="7" r="5" fill="currentColor"/>
+              </svg>
+            </span>
+          <span class="kind-icon interpolated" data-if="currentFrameKind === 'interpolated'" title="Interpolated (computed in-between)">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                <circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2 1.6"/>
+              </svg>
+            </span>
+          <span class="kind-icon forecast" data-if="currentFrameKind === 'forecast'" title="Forecast (predicted future)">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+                <path d="M3 2.5 L11 7 L3 11.5 Z" fill="currentColor"/>
+              </svg>
+            </span>
         </span>
         <span data-if="!frameCount" class="muted">Loading frames…</span>
       </span>
