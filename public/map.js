@@ -19,6 +19,7 @@ import { encodeConfidenceToRgba } from './confidence.js';
 import { encodeOmegaToRgba } from './omega.js';
 import { encodeCapeToRgba } from './cape.js';
 import { encodeThunderstormToRgba } from './thunderstorm.js';
+import { encodeProbabilityToRgba } from './ensemble.js';
 
 const LEAFLET_VERSION = '1.9.4';
 const LEAFLET_CSS = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`;
@@ -174,6 +175,19 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   let thunderOpacity = 0.75;
   let thunderKey = null;
 
+  // Probability-of-rain overlay (sequential blue→cyan→yellow). Lives
+  // just below vectors so it can dominate when toggled on.
+  const probabilityCanvas = document.createElement('canvas');
+  probabilityCanvas.width = tileSize;
+  probabilityCanvas.height = tileSize;
+  const probabilityOverlay = L.imageOverlay(transparentPng, latLngBounds, {
+    opacity: 0,
+    interactive: false,
+  }).addTo(map);
+  let probabilityVisible = false;
+  let probabilityOpacity = 0.7;
+  let probabilityKey = null;
+
   // Vectors overlay (SVG arrows).
   const vectorsSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   vectorsSvg.setAttribute('viewBox', `0 0 ${tileSize} ${tileSize}`);
@@ -203,6 +217,9 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   };
   const applyThunderOpacity = () => {
     thunderOverlay.setOpacity(thunderVisible ? thunderOpacity : 0);
+  };
+  const applyProbabilityOpacity = () => {
+    probabilityOverlay.setOpacity(probabilityVisible ? probabilityOpacity : 0);
   };
   const applyVectorsOpacity = () => {
     vectorsOverlay.setOpacity(vectorsVisible ? vectorsOpacity : 0);
@@ -380,6 +397,32 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     setThunderVisible(v) {
       thunderVisible = Boolean(v);
       applyThunderOpacity();
+    },
+    renderProbability(grid, width, height, key = null) {
+      if (!grid) return;
+      if (key !== null && key === probabilityKey) {
+        applyProbabilityOpacity();
+        return;
+      }
+      if (width !== probabilityCanvas.width || height !== probabilityCanvas.height) {
+        probabilityCanvas.width = width;
+        probabilityCanvas.height = height;
+      }
+      const ctx = probabilityCanvas.getContext('2d');
+      const imageData = ctx.createImageData(width, height);
+      imageData.data.set(encodeProbabilityToRgba(grid, width, height));
+      ctx.putImageData(imageData, 0, 0);
+      probabilityOverlay.setUrl(probabilityCanvas.toDataURL('image/png'));
+      probabilityKey = key;
+      applyProbabilityOpacity();
+    },
+    setProbabilityOpacity(v) {
+      probabilityOpacity = Math.max(0, Math.min(1, v));
+      applyProbabilityOpacity();
+    },
+    setProbabilityVisible(v) {
+      probabilityVisible = Boolean(v);
+      applyProbabilityOpacity();
     },
     setVectors(arrows) {
       while (vectorsSvg.firstChild) vectorsSvg.removeChild(vectorsSvg.firstChild);

@@ -15,6 +15,13 @@ import { ensembleConfidence } from './confidence.js';
 import { fetchOmegaField, upsampleOmegaField } from './omega.js';
 import { fetchCapeField, upsampleCapeField } from './cape.js';
 import { convectiveMask, thunderstormScore } from './thunderstorm.js';
+import {
+  buildPerturbations,
+  perturbFlow,
+  computeProbabilityFields,
+  maxProbabilityField,
+  DEFAULT_ENSEMBLE_SIZE,
+} from './ensemble.js';
 import { tileBounds } from './vectors.js';
 import { buildArrows, COLOR_MODES } from './vectors.js';
 import { forecast as runForecast } from './advect.js';
@@ -29,6 +36,7 @@ const CONFIDENCE_LAYER_ID = 'confidence';
 const OMEGA_LAYER_ID = 'omega';
 const CAPE_LAYER_ID = 'cape';
 const THUNDER_LAYER_ID = 'thunderstorm';
+const PROBABILITY_LAYER_ID = 'probability';
 const TILE_X = 16;
 const TILE_Y = 10;
 const TILE_Z = 5;
@@ -60,6 +68,7 @@ const INITIAL_LAYERS = [
   { id: OMEGA_LAYER_ID, name: 'Convergence (850 hPa)', visible: false, opacity: 65 },
   { id: CAPE_LAYER_ID, name: 'CAPE (instability)', visible: false, opacity: 65 },
   { id: THUNDER_LAYER_ID, name: 'Thunderstorm risk', visible: false, opacity: 75 },
+  { id: PROBABILITY_LAYER_ID, name: 'Probability of rain (2 h)', visible: false, opacity: 70 },
   { id: CONFIDENCE_LAYER_ID, name: 'Forecast uncertainty', visible: false, opacity: 70 },
   { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 90 },
 ];
@@ -203,6 +212,33 @@ const refetchConfidence = addAsync('confidence', logged('confidence', async () =
   const framesB = runForecast(last.grid, conservative, FORECAST_FRAME_COUNT, last.width, last.height);
   const field = ensembleConfidence(framesA, framesB, last.width, last.height);
   return [{ ...field, computeMs: performance.now() - t0 }];
+}));
+
+// Phase 6: stochastic ensemble. Perturb the smoothed flow N ways
+// (rotation ± scale), advect each, aggregate per-cell rain probability
+// across members. The output is a single max-probability-over-horizon
+// grid for the overlay. ~8 advection runs at 512² ≈ 2-3 s on a modern
+// laptop — slowest pipeline stage by far.
+const refetchEnsemble = addAsync('ensemble', logged('ensemble', async () => {
+  const flow = appState.flowField?.data?.smoothed?.[0];
+  const decoded = appState.radarGrids?.data;
+  if (!flow || !decoded || decoded.length === 0) return null;
+  const last = decoded[decoded.length - 1];
+  await Promise.resolve();
+  const t0 = performance.now();
+  const perturbations = buildPerturbations(DEFAULT_ENSEMBLE_SIZE);
+  const forecasts = perturbations.map(({ theta, scale }) => {
+    const perturbed = perturbFlow(flow, theta, scale);
+    return runForecast(last.grid, perturbed, FORECAST_FRAME_COUNT, last.width, last.height);
+  });
+  const probabilityGrids = computeProbabilityFields(forecasts, last.width, last.height);
+  const max = maxProbabilityField(probabilityGrids, last.width, last.height);
+  return [{
+    ...max,
+    members: perturbations.length,
+    steps: probabilityGrids.length,
+    computeMs: performance.now() - t0,
+  }];
 }));
 
 const refetchForecast = addAsync('forecast', logged('forecast', async () => {
@@ -421,6 +457,18 @@ computed('thunderStatus', ['thunderstorm'], (s) => {
   return 'idle';
 });
 
+computed('ensembleStatus', ['ensemble'], (s) => {
+  const e = s.ensemble;
+  if (!e) return 'idle';
+  if (e.loading) return 'simulating';
+  if (e.error) return `error: ${e.error}`;
+  if (e.data) {
+    const f = e.data[0];
+    return `${f.members} members × ${f.steps} steps in ${f.computeMs.toFixed(0)} ms`;
+  }
+  return 'idle';
+});
+
 // ─── 4. Map handle (lazy) + bridge between state and Leaflet ───────────
 /* node:coverage disable */
 let mapHandle = null;
@@ -451,6 +499,9 @@ function applyLayerToMap(layer) {
   } else if (layer.id === THUNDER_LAYER_ID) {
     mapHandle.setThunderVisible(layer.visible);
     mapHandle.setThunderOpacity(opacity);
+  } else if (layer.id === PROBABILITY_LAYER_ID) {
+    mapHandle.setProbabilityVisible(layer.visible);
+    mapHandle.setProbabilityOpacity(opacity);
   }
 }
 
@@ -509,11 +560,16 @@ watch(['radarGrids.data', 'trend.data', 'cape.data'], () => {
   /* node:coverage enable */
 });
 
-// Re-run forecast + interpolation + confidence when flow OR trend OR
-// omega updates. Forecast folds all three into its growth signal.
+// Re-run forecast + interpolation + confidence + ensemble when flow OR
+// trend OR omega updates. Forecast folds all three into its growth
+// signal; ensemble only depends on flow but it's cheap to re-run on
+// trend/omega updates too (rare events).
 watch(['flowField.data', 'trend.data', 'omega.data'], () => {
   /* node:coverage disable */
-  if (appState.flowField?.data?.smoothed?.[0]) refetchForecast();
+  if (appState.flowField?.data?.smoothed?.[0]) {
+    refetchForecast();
+    refetchEnsemble();
+  }
   if (appState.flowField?.data?.pairs) refetchInterpolated();
   if (appState.flowField?.data?.pairs) refetchConfidence();
   /* node:coverage enable */
@@ -594,6 +650,15 @@ watch(['thunderstorm.data'], () => {
   const t = appState.thunderstorm?.data?.[0];
   if (!t) return;
   mapHandle.renderThunder(t.grid, t.width, t.height, `${t.computeMs}`);
+  /* node:coverage enable */
+});
+
+watch(['ensemble.data'], () => {
+  /* node:coverage disable */
+  if (!mapHandle) return;
+  const e = appState.ensemble?.data?.[0];
+  if (!e) return;
+  mapHandle.renderProbability(e.grid, e.width, e.height, `${e.computeMs}`);
   /* node:coverage enable */
 });
 
