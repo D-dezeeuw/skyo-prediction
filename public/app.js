@@ -12,6 +12,7 @@ import {
   DEFAULT_FLOW_CONFIDENCE_THRESHOLD,
 } from './flow.js';
 import { buildArrows, COLOR_MODES } from './vectors.js';
+import { forecast as runForecast } from './advect.js';
 
 const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
@@ -26,6 +27,8 @@ const FLOW_SEARCH_RADIUS = 8;
 // returns arbitrary zero motion vectors; rendering them as arrows just
 // adds visual noise. 0.05 mm/h ≈ "trace precipitation" in radar lingo.
 const ARROW_INTENSITY_THRESHOLD = 0.05;
+// 12 forecast frames at 10-minute intervals = 2 hours of nowcast.
+const FORECAST_FRAME_COUNT = 12;
 
 // Layers are plain state objects so the template's data-model can write
 // directly to `appState.layers[i].visible` / `.opacity` — no registry
@@ -68,6 +71,23 @@ const refetchGrids = addAsync('radarGrids', async () => {
   console.info(`[skyo-prediction] decoded ${decoded.length} / ${data.frames.length} frames in ${(performance.now() - t0).toFixed(0)} ms`);
   return decoded;
   /* node:coverage enable */
+});
+
+const refetchForecast = addAsync('forecast', async () => {
+  const flow = appState.flowField?.data?.smoothed;
+  const decoded = appState.radarGrids?.data;
+  if (!flow || !decoded || decoded.length === 0) return null;
+  const last = decoded[decoded.length - 1];
+  await Promise.resolve();
+  const t0 = performance.now();
+  const frames = runForecast(last.grid, flow, FORECAST_FRAME_COUNT, last.width, last.height);
+  return {
+    frames,
+    width: last.width,
+    height: last.height,
+    startTime: last.time,
+    computeMs: performance.now() - t0,
+  };
 });
 
 const refetchFlow = addAsync('flowField', async () => {
@@ -131,6 +151,15 @@ computed('gridStatus', ['radarGrids'], (s) => {
   return 'idle';
 });
 
+computed('forecastStatus', ['forecast'], (s) => {
+  const f = s.forecast;
+  if (!f) return 'idle';
+  if (f.loading) return 'advecting';
+  if (f.error) return `error: ${f.error.message}`;
+  if (f.data) return `${f.data.frames.length} frames in ${f.data.computeMs.toFixed(0)} ms`;
+  return 'idle';
+});
+
 // ─── 4. Map handle (lazy) + bridge between state and Leaflet ───────────
 /* node:coverage disable */
 let mapHandle = null;
@@ -191,6 +220,13 @@ watch(['radarHistory.data'], () => {
 watch(['radarGrids.data'], () => {
   /* node:coverage disable */
   if ((appState.radarGrids?.data?.length ?? 0) >= 2) refetchFlow();
+  /* node:coverage enable */
+});
+
+// Once flow finishes, advect the latest decoded frame forward N steps.
+watch(['flowField.data'], () => {
+  /* node:coverage disable */
+  if (appState.flowField?.data?.smoothed) refetchForecast();
   /* node:coverage enable */
 });
 
