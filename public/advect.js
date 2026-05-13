@@ -21,12 +21,17 @@
 const EPS = 1e-9;
 
 export function advectStep(input, flow, width, height, options = {}) {
-  const { dt = 1 } = options;
+  const { dt = 1, trend = null, trendStrength = 1 } = options;
   validate(input, flow, width, height);
+  if (trend && (trend.grid?.length !== width * height || trend.width !== width || trend.height !== height)) {
+    throw new Error('advectStep: trend dimensions must match input width/height');
+  }
   const out = new Float32Array(width * height);
   const flowW = flow.width;
   const flowH = flow.height;
   const blockSize = flow.blockSize;
+  const trendGrid = trend?.grid ?? null;
+  const trendDt = trendStrength * dt;
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -37,7 +42,18 @@ export function advectStep(input, flow, width, height, options = {}) {
       const { vx, vy } = sampleFlow(flow, flowW, flowH, blockSize, x, y);
       const sx = x - vx * dt;
       const sy = y - vy * dt;
-      out[y * width + x] = bilinearSample(input, width, height, sx, sy);
+      let value = bilinearSample(input, width, height, sx, sy);
+      // Source-cell growth/decay: the cell that brought the rain here
+      // was growing/shrinking; apply that trend over the same dt.
+      // Bilinear-sampling the trend grid (rather than nearest-neighbour)
+      // keeps gradients smooth across pixels.
+      if (trendGrid) {
+        const trendRate = bilinearSample(trendGrid, width, height, sx, sy);
+        value += trendRate * trendDt;
+        // Clamp to non-negative mm/h — negative rain isn't a thing.
+        if (value < 0) value = 0;
+      }
+      out[y * width + x] = value;
     }
   }
   return out;
@@ -56,11 +72,11 @@ export function forecast(initial, flow, n, width, height, options = {}) {
   if (!Number.isInteger(n) || n < 0) {
     throw new Error('forecast: n must be a non-negative integer');
   }
-  const { dt = 1 } = options;
+  const { dt = 1, trend = null, trendStrength = 1 } = options;
   const frames = [];
   let current = initial;
   for (let i = 0; i < n; i++) {
-    current = advectStep(current, flow, width, height, { dt });
+    current = advectStep(current, flow, width, height, { dt, trend, trendStrength });
     frames.push(current);
   }
   return frames;

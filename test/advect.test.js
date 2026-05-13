@@ -180,6 +180,57 @@ describe('advectStep', () => {
   });
 });
 
+describe('advectStep — growth/decay (trend)', () => {
+  const w = 8, h = 8;
+  const uniformTrend = (rate) => ({
+    width: w,
+    height: h,
+    grid: Float32Array.from({ length: w * h }, () => rate),
+  });
+
+  test('zero flow + zero trend → input unchanged', () => {
+    const input = makeGrid(w, h, (x, y) => x + y);
+    const flow = uniformFlow(w, h, 4, 0, 0);
+    const out = advectStep(input, flow, w, h, { trend: uniformTrend(0) });
+    for (let i = 0; i < input.length; i++) {
+      assert.ok(Math.abs(out[i] - input[i]) < 1e-9);
+    }
+  });
+
+  test('zero flow + positive trend adds rate*dt everywhere', () => {
+    const input = makeGrid(w, h, () => 5);
+    const flow = uniformFlow(w, h, 4, 0, 0);
+    const out = advectStep(input, flow, w, h, { trend: uniformTrend(2), dt: 0.5 });
+    // 5 + 2 * 0.5 = 6
+    for (const v of out) assert.ok(Math.abs(v - 6) < 1e-9);
+  });
+
+  test('negative trend clamped at zero (no negative rain)', () => {
+    const input = makeGrid(w, h, () => 1);
+    const flow = uniformFlow(w, h, 4, 0, 0);
+    const out = advectStep(input, flow, w, h, { trend: uniformTrend(-10), dt: 1 });
+    for (const v of out) assert.equal(v, 0);
+  });
+
+  test('trendStrength scales the effective growth', () => {
+    const input = makeGrid(w, h, () => 5);
+    const flow = uniformFlow(w, h, 4, 0, 0);
+    const out = advectStep(input, flow, w, h, { trend: uniformTrend(2), trendStrength: 0.5 });
+    // 5 + 2 * 1 * 0.5 = 6
+    for (const v of out) assert.ok(Math.abs(v - 6) < 1e-9);
+  });
+
+  test('throws when trend dimensions mismatch input', () => {
+    const input = new Float32Array(w * h);
+    const flow = uniformFlow(w, h, 4, 0, 0);
+    const badTrend = { width: 4, height: 4, grid: new Float32Array(16) };
+    assert.throws(
+      () => advectStep(input, flow, w, h, { trend: badTrend }),
+      /trend dimensions/,
+    );
+  });
+});
+
 describe('forecast', () => {
   test('produces N frames', () => {
     const w = 16, h = 16;
@@ -224,6 +275,24 @@ describe('forecast', () => {
       for (let i = 0; i < input.length; i++) {
         assert.equal(frame[i], input[i]);
       }
+    }
+  });
+
+  test('forecast applies trend cumulatively across steps', () => {
+    const w = 8, h = 8;
+    const input = makeGrid(w, h, () => 5);
+    const flow = uniformFlow(w, h, 4, 0, 0);
+    const trend = {
+      width: w,
+      height: h,
+      grid: Float32Array.from({ length: w * h }, () => 1),
+    };
+    const frames = forecast(input, flow, 3, w, h, { trend });
+    // Step 1: 5 + 1 = 6. Step 2: 6 + 1 = 7. Step 3: 7 + 1 = 8.
+    for (let i = 0; i < w * h; i++) {
+      assert.equal(frames[0][i], 6);
+      assert.equal(frames[1][i], 7);
+      assert.equal(frames[2][i], 8);
     }
   });
 });

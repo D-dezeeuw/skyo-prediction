@@ -116,9 +116,18 @@ const refetchForecast = addAsync('forecast', logged('forecast', async () => {
   const decoded = appState.radarGrids?.data;
   if (!flow || !decoded || decoded.length === 0) return null;
   const last = decoded[decoded.length - 1];
+  // Phase-2: apply the per-pixel growth/decay trend during forecast
+  // advection. Skill is good for ~30–60 min lead time; we damp the
+  // trend so far-out forecasts don't blow up: at FORECAST_FRAME_COUNT
+  // steps, trendStrength = 0.5 means the final frame's growth is half
+  // what a constant-rate extrapolation would say.
+  const trend = appState.trend?.data ?? null;
   await Promise.resolve();
   const t0 = performance.now();
-  const frames = runForecast(last.grid, flow, FORECAST_FRAME_COUNT, last.width, last.height);
+  const frames = runForecast(last.grid, flow, FORECAST_FRAME_COUNT, last.width, last.height, {
+    trend,
+    trendStrength: 0.5,
+  });
   return {
     frames,
     width: last.width,
@@ -293,7 +302,9 @@ watch(['radarGrids.data'], () => {
   /* node:coverage enable */
 });
 
-watch(['flowField.data'], () => {
+// Re-run forecast + interpolation when flow OR trend updates, so the
+// forecast picks up growth/decay once trend is ready.
+watch(['flowField.data', 'trend.data'], () => {
   /* node:coverage disable */
   if (appState.flowField?.data?.smoothed) refetchForecast();
   if (appState.flowField?.data?.pairs) refetchInterpolated();
