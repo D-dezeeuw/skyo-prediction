@@ -261,39 +261,32 @@ const refetchEnsemble = addAsync('ensemble', logged('ensemble', async () => {
 // Cache is keyed by frame.time so scrubbing back/forth is instant after the
 // first visit. Cleared whenever any upstream input changes.
 const topologyCache = new Map();
-const refetchTopology = addAsync('topology', logged('topology', async () => {
-  const frames = appState.unifiedFrames;
-  if (!frames || frames.length === 0) return null;
-  const idx = clampIdx(appState.playheadIdx, frames.length);
-  const f = frames[idx];
-  if (!f?.grid) return null;
-  const cached = topologyCache.get(f.time);
-  if (cached) return [cached];
 
+function currentTopologySupporting() {
+  return {
+    trend: appState.trend?.data?.[0] ?? null,
+    cape: appState.cape?.data?.[0] ?? null,
+    thunderscore: appState.thunderstorm?.data?.[0] ?? null,
+    probability: appState.ensemble?.data?.[0] ?? null,
+    flow: appState.flowField?.data?.smoothed?.[0] ?? null,
+  };
+}
+
+function ensureTopologyForFrame(f) {
+  if (!f?.grid) return null;
+  const hit = topologyCache.get(f.time);
+  if (hit) return hit;
   const decoded = appState.radarGrids?.data;
   const lastObserved = decoded?.[decoded.length - 1];
-  const trend = appState.trend?.data?.[0] ?? null;
-  const cape = appState.cape?.data?.[0] ?? null;
-  const thunder = appState.thunderstorm?.data?.[0] ?? null;
-  const probability = appState.ensemble?.data?.[0] ?? null;
-  const flow = appState.flowField?.data?.smoothed?.[0] ?? null;
-
-  // Convective mask is computed per-frame (it depends on the frame's
-  // grid, not on a precomputed raster). Keep it cheap — re-deriving on
-  // each frame is fine since we cache the resulting topology.
+  const supporting = currentTopologySupporting();
+  // Convective mask depends only on the frame's grid; cheap to re-derive
+  // and folded into the cached topology, so no separate cache needed.
   const convective = convectiveMask(f.grid, f.width, f.height);
-
-  // leadMinutes from the latest observed frame's time.
   const observedAnchor = lastObserved?.time ?? f.time;
   const leadMinutes = Math.round((f.time - observedAnchor) / 60);
-
   const topology = buildTopology(f.grid, f.width, f.height, {
-    trend,
+    ...supporting,
     convective,
-    cape,
-    thunderscore: thunder,
-    probability,
-    flow,
   }, {
     frame: {
       time: new Date(f.time * 1000).toISOString(),
@@ -304,6 +297,16 @@ const refetchTopology = addAsync('topology', logged('topology', async () => {
     },
   });
   topologyCache.set(f.time, topology);
+  return topology;
+}
+
+const refetchTopology = addAsync('topology', logged('topology', async () => {
+  const frames = appState.unifiedFrames;
+  if (!frames || frames.length === 0) return null;
+  const idx = clampIdx(appState.playheadIdx, frames.length);
+  const f = frames[idx];
+  const topology = ensureTopologyForFrame(f);
+  if (!topology) return null;
   return [topology];
 }));
 
@@ -750,13 +753,62 @@ watch(['ensemble.data'], () => {
 });
 
 // Topology: bust the per-frame cache whenever any input that feeds it
-// changes, then trigger a recompute for the current playhead frame.
+// changes, then trigger a recompute for the current playhead frame AND
+// kick off an idle pre-warm so subsequent scrubs are instant.
 watch(['radarGrids.data', 'trend.data', 'cape.data', 'thunderstorm.data', 'ensemble.data', 'flowField.data', 'unifiedFrames'], () => {
   /* node:coverage disable */
   topologyCache.clear();
-  if (appState.unifiedFrames?.length) refetchTopology();
+  if (appState.unifiedFrames?.length) {
+    refetchTopology();
+    startTopologyPrewarm();
+  }
   /* node:coverage enable */
 });
+
+/* node:coverage disable */
+// Idle pre-warm: walk the unified timeline and pre-compute each frame's
+// topology in the background, so once the user scrubs into a previously-
+// unvisited frame the result is already cached. ~5 ms of work per frame
+// (after the bbox/mask perf fix) × ~48 frames = a quarter-second of work,
+// spread over ~1 s of wall-clock via setTimeout pauses so it stays
+// invisible behind the main thread.
+let prewarmTimer = 0;
+function startTopologyPrewarm() {
+  cancelTopologyPrewarm();
+  prewarmTimer = setTimeout(stepTopologyPrewarm, 50);
+}
+function cancelTopologyPrewarm() {
+  if (prewarmTimer) {
+    clearTimeout(prewarmTimer);
+    prewarmTimer = 0;
+  }
+}
+function stepTopologyPrewarm() {
+  prewarmTimer = 0;
+  const frames = appState.unifiedFrames;
+  if (!frames || frames.length === 0) return;
+  // Walk forward from the playhead first (most likely scrub direction),
+  // then wrap around. Pick the first uncached frame.
+  const startIdx = clampIdx(appState.playheadIdx, frames.length);
+  let target = null;
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[(startIdx + i) % frames.length];
+    if (f?.grid && !topologyCache.has(f.time)) {
+      target = f;
+      break;
+    }
+  }
+  if (!target) return; // cache fully warmed
+  try {
+    ensureTopologyForFrame(target);
+  } catch (err) {
+    console.warn('[skyo-prediction] topology prewarm step failed:', err);
+  }
+  // Yield to keep the main thread responsive. setTimeout(0) is fine —
+  // each ensureTopologyForFrame is a few ms.
+  prewarmTimer = setTimeout(stepTopologyPrewarm, 16);
+}
+/* node:coverage enable */
 
 // Compute topology for the new playhead frame on every scrub.
 watch(['playheadIdx'], () => {

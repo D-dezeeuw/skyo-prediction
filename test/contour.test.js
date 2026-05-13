@@ -132,6 +132,81 @@ describe('marchingSquares', () => {
     assert.throws(() => marchingSquares(new Float32Array(4), 2, 2, NaN), /threshold/);
     assert.throws(() => marchingSquares(new Float32Array(4), 2, 2, Infinity), /threshold/);
   });
+
+  test('bbox option restricts the scan but produces the same polygon for an isolated blob', () => {
+    // 50×50 grid with a single 5×5 hot block at (20..24, 20..24)
+    const grid = mkGrid(50, 50, (x, y) => (x >= 20 && x <= 24 && y >= 20 && y <= 24 ? 50 : 0));
+    const full = marchingSquares(grid, 50, 50, 25);
+    const limited = marchingSquares(grid, 50, 50, 25, {
+      bbox: { minX: 20, maxX: 24, minY: 20, maxY: 24 },
+    });
+    assert.equal(full.length, limited.length);
+    // Same vertex count after the +1 padding picks up the contour around the block
+    assert.equal(full[0].length, limited[0].length);
+  });
+
+  test('mask + maskValue zero out cells whose label != target (no leakage from other blobs)', () => {
+    // Two side-by-side 3×3 blobs at value 50, separated by 2 cells of zero.
+    // Without masking, both contours are returned. With mask targeting blob-1
+    // only, only that blob's contour comes back.
+    const grid = mkGrid(15, 5, (x, y) => {
+      if (x >= 1 && x <= 3 && y >= 1 && y <= 3) return 50;
+      if (x >= 8 && x <= 10 && y >= 1 && y <= 3) return 50;
+      return 0;
+    });
+    // Hand-craft a labels array: blob 1 on the left, blob 2 on the right
+    const labels = new Int32Array(15 * 5);
+    for (let y = 1; y <= 3; y++) for (let x = 1; x <= 3; x++) labels[y * 15 + x] = 1;
+    for (let y = 1; y <= 3; y++) for (let x = 8; x <= 10; x++) labels[y * 15 + x] = 2;
+
+    const both = marchingSquares(grid, 15, 5, 25);
+    assert.equal(both.length, 2);
+
+    const onlyOne = marchingSquares(grid, 15, 5, 25, {
+      mask: labels, maskValue: 1,
+    });
+    assert.equal(onlyOne.length, 1);
+    // The remaining polygon is the left blob: all x ≤ 3.5
+    const maxX = Math.max(...onlyOne[0].map((p) => p[0]));
+    assert.ok(maxX <= 4, `expected left-blob only, maxX=${maxX}`);
+  });
+
+  test('bbox + mask combine — only scans the blob region AND masks neighbours', () => {
+    // Two overlapping-bbox blobs: one big square + one tiny dot inside its bbox.
+    // Without mask we'd see both. With mask we see only the targeted one even
+    // though bbox includes the other's pixels.
+    const grid = mkGrid(20, 20, (x, y) => {
+      if (x >= 2 && x <= 12 && y >= 2 && y <= 12) return 50;  // big square (blob 1)
+      if (x === 8 && y === 8) return 0;                        // hole — different blob (irrelevant for this test)
+      return 0;
+    });
+    // Different fake "blob": a single cell at (15, 15) marked label 2
+    grid[15 * 20 + 15] = 50;
+    const labels = new Int32Array(20 * 20);
+    for (let y = 2; y <= 12; y++) for (let x = 2; x <= 12; x++) labels[y * 20 + x] = 1;
+    labels[15 * 20 + 15] = 2;
+
+    // Targeting blob 1 only, with bbox covering the whole grid — must still
+    // skip the (15, 15) cell because mask says it's blob 2.
+    const out = marchingSquares(grid, 20, 20, 25, {
+      bbox: { minX: 0, maxX: 19, minY: 0, maxY: 19 },
+      mask: labels, maskValue: 1,
+    });
+    assert.equal(out.length, 1);
+    const maxX = Math.max(...out[0].map((p) => p[0]));
+    const maxY = Math.max(...out[0].map((p) => p[1]));
+    assert.ok(maxX < 14, `polygon should not reach the blob-2 cell at x=15, got maxX=${maxX}`);
+    assert.ok(maxY < 14);
+  });
+
+  test('bbox without mask still works (just bounds the scan)', () => {
+    // Big grid, single small blob. Scan with a tight bbox — must find it.
+    const grid = mkGrid(100, 100, (x, y) => (x >= 10 && x <= 14 && y >= 10 && y <= 14 ? 50 : 0));
+    const polys = marchingSquares(grid, 100, 100, 25, {
+      bbox: { minX: 10, maxX: 14, minY: 10, maxY: 14 },
+    });
+    assert.equal(polys.length, 1);
+  });
 });
 
 describe('simplifyPolygon', () => {
