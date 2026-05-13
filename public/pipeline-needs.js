@@ -20,30 +20,25 @@
 /** Stage → array of layer ids that require it (directly or transitively). */
 export const STAGE_DEPENDENCIES = Object.freeze({
   // flowField feeds: motion vectors (direct), interpolated playback for
-  // the radar layer, forecast (advection), ensemble, confidence, and
-  // topology (motion vectors per cloud).
-  flowField:    ['motion-vectors', 'radar-history', 'probability', 'confidence', 'topology'],
+  // the radar layer, forecast (advection), ensemble, confidence.
+  flowField:    ['motion-vectors', 'radar-history', 'probability', 'confidence'],
   // trend goes into the forecast growth/decay (so radar future frames
-  // need it), into thunderstorm fusion, and into topology severity.
-  trend:        ['trend', 'radar-history', 'thunderstorm', 'topology'],
+  // need it) and into thunderstorm fusion.
+  trend:        ['trend', 'radar-history', 'thunderstorm'],
   // omega is folded into the forecast trend; otherwise only the omega layer.
   omega:        ['omega', 'radar-history'],
-  // cape is consumed by thunderstorm fusion + topology severity.
-  cape:         ['cape', 'thunderstorm', 'topology'],
-  // thunderstorm score feeds its own layer + topology severity.
-  thunderstorm: ['thunderstorm', 'topology'],
-  // ensemble feeds the probability-of-rain layer + topology probability driver.
-  ensemble:     ['probability', 'topology'],
+  // cape is consumed by thunderstorm fusion + its own layer.
+  cape:         ['cape', 'thunderstorm'],
+  // thunderstorm score feeds its own layer.
+  thunderstorm: ['thunderstorm'],
+  // ensemble feeds the probability-of-rain layer.
+  ensemble:     ['probability'],
   // confidence is consumed only by its own layer.
   confidence:   ['confidence'],
-  // interpolated makes the radar scrubber smooth. Topology computes per
-  // unified-timeline slot so also depends on it.
-  interpolated: ['radar-history', 'topology'],
-  // forecast extends the radar into the next 2 h. Topology covers
-  // forecast slots, so it needs forecast too.
-  forecast:     ['radar-history', 'topology'],
-  // topology is the cloud-shape layer.
-  topology:     ['topology'],
+  // interpolated makes the radar scrubber smooth.
+  interpolated: ['radar-history'],
+  // forecast extends the radar into the next 2 h.
+  forecast:     ['radar-history'],
 });
 
 /**
