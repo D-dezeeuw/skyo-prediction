@@ -27,6 +27,12 @@ export const DEFAULT_FLOW_INTENSITY_THRESHOLD = 0.05;
  *  ~0.4 is a reasonable starting point for noisy radar. */
 export const DEFAULT_FLOW_CONFIDENCE_THRESHOLD = 0.5;
 
+/** Default exponential-decay rate for weighted temporal smoothing.
+ *  weight[i] = decay^(newest_idx - i). 0.7 → newest pair gets ~30% of
+ *  total weight, half-life ≈ 2 pairs (~20 min at 10-min cadence).
+ *  Smaller = more responsive, larger = more stable. */
+export const DEFAULT_TEMPORAL_DECAY = 0.7;
+
 export function computeFlow(prev, curr, width, height, options = {}) {
   const {
     blockSize = DEFAULT_BLOCK_SIZE,
@@ -123,23 +129,56 @@ export function medianFilter(field) {
 }
 
 /**
- * Average a stack of flow fields (last-N temporal smoothing).
- * All fields must have matching dimensions; mismatches throw.
+ * Uniform average of a stack of flow fields (each field gets weight 1/N).
+ * All fields must share dimensions.
  */
 export function smoothFlows(fields) {
+  return smoothFlowsWeighted(fields, { decay: 1 });
+}
+
+/**
+ * Exponential-decay weighted average of a stack of flow fields, ordered
+ * oldest-first. The newest field (last in array) gets weight 1; each
+ * older field gets weight = decay × the next-newer one's weight.
+ * decay = 1 reduces to a uniform average; decay → 0 collapses to "use
+ * only the latest field". The default 0.7 has a ~2-pair half-life.
+ *
+ * Why bother: a single per-pair flow field has noisy patches (low-
+ * contrast blocks, brief speckle, rotation that block-matching can't
+ * resolve). Uniform averaging over a small window dilutes those errors
+ * but loses responsiveness. Exponential decay over a larger window keeps
+ * recent-bias for direction changes while letting the older 8 pairs
+ * collectively dampen one-off bad pairs.
+ */
+export function smoothFlowsWeighted(fields, options = {}) {
   if (!Array.isArray(fields) || fields.length === 0) return null;
+  const { decay = DEFAULT_TEMPORAL_DECAY } = options;
+  if (!Number.isFinite(decay) || decay <= 0 || decay > 1) {
+    throw new Error('smoothFlowsWeighted: decay must be in (0, 1]');
+  }
   const ref = fields[0];
   for (let i = 1; i < fields.length; i++) {
     const f = fields[i];
     if (f.width !== ref.width || f.height !== ref.height) {
-      throw new Error('smoothFlows: all fields must share dimensions');
+      throw new Error('smoothFlowsWeighted: all fields must share dimensions');
     }
   }
-  const data = new Float32Array(ref.data.length);
-  for (let i = 0; i < data.length; i++) {
+
+  // Precompute weights: weights[i] = decay^(newestIdx - i)
+  const N = fields.length;
+  const weights = new Float64Array(N);
+  let weightSum = 0;
+  for (let i = 0; i < N; i++) {
+    weights[i] = Math.pow(decay, (N - 1) - i);
+    weightSum += weights[i];
+  }
+
+  const len = ref.data.length;
+  const data = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
     let sum = 0;
-    for (let k = 0; k < fields.length; k++) sum += fields[k].data[i];
-    data[i] = sum / fields.length;
+    for (let k = 0; k < N; k++) sum += weights[k] * fields[k].data[i];
+    data[i] = sum / weightSum;
   }
   return { width: ref.width, height: ref.height, blockSize: ref.blockSize, data };
 }
@@ -164,19 +203,27 @@ export function computeFlowPairs(history, options = {}) {
 
 /**
  * Convenience: compute per-pair fields, optionally median-filter each
- * one, and return the last `window` smoothed into a single field.
- * Returns null if fewer than 2 grids.
+ * one, and return all pairs collapsed into a single field via
+ * exponential-decay weighted averaging. Returns null if fewer than 2
+ * grids.
+ *
+ * Pass `decay: 1` for uniform averaging (legacy behaviour). Pass
+ * `window: N` to limit the temporal extent (default uses all pairs).
  */
 export function flowFromHistory(history, options = {}) {
   const {
-    window = DEFAULT_SMOOTHING_WINDOW,
+    window,
+    decay = DEFAULT_TEMPORAL_DECAY,
     medianFilterEach = true,
     ...flowOpts
   } = options;
   let pairs = computeFlowPairs(history, flowOpts);
   if (pairs.length === 0) return null;
   if (medianFilterEach) pairs = pairs.map(medianFilter);
-  return smoothFlows(pairs.slice(-Math.max(1, window)));
+  if (Number.isInteger(window) && window > 0) {
+    pairs = pairs.slice(-window);
+  }
+  return smoothFlowsWeighted(pairs, { decay });
 }
 
 function bestMatch(prev, curr, x0, y0, blockSize, search, w, h) {
