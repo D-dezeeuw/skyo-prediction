@@ -11,6 +11,7 @@ import {
   DEFAULT_FLOW_CONFIDENCE_THRESHOLD,
   DEFAULT_TEMPORAL_DECAY,
 } from './flow.js';
+import { ensembleConfidence } from './confidence.js';
 import { buildArrows, COLOR_MODES } from './vectors.js';
 import { forecast as runForecast } from './advect.js';
 import { interpolateHistory, DEFAULT_INTERPOLATION_FACTOR } from './interpolate.js';
@@ -20,6 +21,7 @@ import { computeTrend, DEFAULT_TREND_WINDOW } from './trend.js';
 const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
 const TREND_LAYER_ID = 'trend';
+const CONFIDENCE_LAYER_ID = 'confidence';
 const HISTORY_FRAME_COUNT = 12;
 // 512-px tile (RainViewer's higher-detail variant — 3.4× the PNG file
 // size of 256, so real detail not just upscaling) gives us a 512×512
@@ -40,6 +42,7 @@ const PLAY_INTERVAL_MS = Math.max(60, Math.floor(FRAME_INTERVAL_MS / INTERPOLATI
 const INITIAL_LAYERS = [
   { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 80 },
   { id: TREND_LAYER_ID, name: 'Growth / decay', visible: false, opacity: 65 },
+  { id: CONFIDENCE_LAYER_ID, name: 'Forecast uncertainty', visible: false, opacity: 70 },
   { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 90 },
 ];
 
@@ -114,6 +117,27 @@ const refetchInterpolated = addAsync('interpolated', logged('interpolated', asyn
     factor: INTERPOLATION_FACTOR,
     computeMs: performance.now() - t0,
   };
+}));
+
+// Confidence-cone ensemble: run a second forecast with a stronger
+// flow smoothing (decay=0.4 instead of the default 0.7), compute the
+// per-cell RMS spread between the two forecasts over the lead time.
+// Where they agree → confident; where they diverge → low confidence.
+const refetchConfidence = addAsync('confidence', logged('confidence', async () => {
+  const pairs = appState.flowField?.data?.pairs;
+  const defaultFlow = appState.flowField?.data?.smoothed?.[0];
+  const decoded = appState.radarGrids?.data;
+  if (!pairs || !defaultFlow || !decoded || decoded.length === 0) return null;
+  const last = decoded[decoded.length - 1];
+  await Promise.resolve();
+  const t0 = performance.now();
+  // Conservative flow (heavy smoothing). No trend on either member —
+  // we want pure flow-uncertainty, not growth-uncertainty.
+  const conservative = smoothFlowsWeighted(pairs, { decay: 0.4 });
+  const framesA = runForecast(last.grid, defaultFlow, FORECAST_FRAME_COUNT, last.width, last.height);
+  const framesB = runForecast(last.grid, conservative, FORECAST_FRAME_COUNT, last.width, last.height);
+  const field = ensembleConfidence(framesA, framesB, last.width, last.height);
+  return [{ ...field, computeMs: performance.now() - t0 }];
 }));
 
 const refetchForecast = addAsync('forecast', logged('forecast', async () => {
@@ -262,6 +286,18 @@ computed('trendStatus', ['trend'], (s) => {
   return 'idle';
 });
 
+computed('confidenceStatus', ['confidence'], (s) => {
+  const c = s.confidence;
+  if (!c) return 'idle';
+  if (c.loading) return 'computing';
+  if (c.error) return `error: ${c.error}`;
+  if (c.data) {
+    const f = c.data[0];
+    return `${f.width}×${f.height} in ${f.computeMs.toFixed(0)} ms`;
+  }
+  return 'idle';
+});
+
 // ─── 4. Map handle (lazy) + bridge between state and Leaflet ───────────
 /* node:coverage disable */
 let mapHandle = null;
@@ -280,6 +316,9 @@ function applyLayerToMap(layer) {
   } else if (layer.id === TREND_LAYER_ID) {
     mapHandle.setTrendVisible(layer.visible);
     mapHandle.setTrendOpacity(opacity);
+  } else if (layer.id === CONFIDENCE_LAYER_ID) {
+    mapHandle.setConfidenceVisible(layer.visible);
+    mapHandle.setConfidenceOpacity(opacity);
   }
 }
 
@@ -329,12 +368,12 @@ watch(['radarGrids.data'], () => {
   /* node:coverage enable */
 });
 
-// Re-run forecast + interpolation when flow OR trend updates, so the
-// forecast picks up growth/decay once trend is ready.
+// Re-run forecast + interpolation + confidence when flow OR trend updates.
 watch(['flowField.data', 'trend.data'], () => {
   /* node:coverage disable */
   if (appState.flowField?.data?.smoothed?.[0]) refetchForecast();
   if (appState.flowField?.data?.pairs) refetchInterpolated();
+  if (appState.flowField?.data?.pairs) refetchConfidence();
   /* node:coverage enable */
 });
 
@@ -377,6 +416,15 @@ watch(['trend.data'], () => {
   // Use window+timestamp as the dedupe key so we re-render exactly when
   // the trend recomputes, not on every layer toggle.
   mapHandle.renderTrend(t.grid, t.width, t.height, `${t.window}:${t.computeMs}`);
+  /* node:coverage enable */
+});
+
+watch(['confidence.data'], () => {
+  /* node:coverage disable */
+  if (!mapHandle) return;
+  const c = appState.confidence?.data?.[0];
+  if (!c) return;
+  mapHandle.renderConfidence(c.grid, c.width, c.height, `${c.computeMs}`);
   /* node:coverage enable */
 });
 
