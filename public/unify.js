@@ -18,7 +18,11 @@
 export const DEFAULT_FRAME_INTERVAL_SEC = 600;
 
 export function buildUnifiedFrames(interpolated, forecast, options = {}) {
-  const { frameIntervalSec = DEFAULT_FRAME_INTERVAL_SEC, pairsLength = 0 } = options;
+  const {
+    frameIntervalSec = DEFAULT_FRAME_INTERVAL_SEC,
+    pairsLength = 0,
+    forecastSlots = 0,
+  } = options;
   const out = [];
 
   const interpFrames = interpolated?.frames ?? [];
@@ -37,14 +41,22 @@ export function buildUnifiedFrames(interpolated, forecast, options = {}) {
     });
   }
 
-  if (forecast?.frames?.length) {
-    const startTime = forecast.startTime ?? (interpFrames.at(-1)?.time ?? 0);
-    for (let i = 0; i < forecast.frames.length; i++) {
+  // Forecast slots: always reserve max(forecastSlots, forecast.frames.length)
+  // so the scrubber always extends into the future even when forecast hasn't
+  // settled yet. Slots without grid data still carry a kind="forecast" tag
+  // and a projected timestamp; the map renderer skips frames with null grids.
+  const availableForecast = forecast?.frames?.length ?? 0;
+  const slotCount = Math.max(forecastSlots, availableForecast);
+  if (slotCount > 0) {
+    const startTime = forecast?.startTime ?? interpFrames.at(-1)?.time ?? 0;
+    const width = forecast?.width ?? interpFrames.at(-1)?.width ?? 0;
+    const height = forecast?.height ?? interpFrames.at(-1)?.height ?? 0;
+    for (let i = 0; i < slotCount; i++) {
       out.push({
         time: startTime + (i + 1) * frameIntervalSec,
-        grid: forecast.frames[i],
-        width: forecast.width,
-        height: forecast.height,
+        grid: forecast?.frames?.[i] ?? null,
+        width,
+        height,
         kind: 'forecast',
         pairIdx: lastPair,
       });
