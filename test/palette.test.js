@@ -7,6 +7,9 @@ import {
   rainRateToDbz,
   rgbToDbz,
   dbzToRgb,
+  dbzToRgbSmooth,
+  RAIN_FADE_FLOOR_DBZ,
+  RAIN_FADE_CEILING_DBZ,
   decodeRgbaToRainRate,
   encodeRainRateToRgba,
 } from '../public/palette.js';
@@ -150,6 +153,47 @@ describe('decodeRgbaToRainRate', () => {
   });
 });
 
+describe('dbzToRgbSmooth', () => {
+  test('returns null below the lowest rain stop / for non-finite input', () => {
+    assert.equal(dbzToRgbSmooth(TRANSPARENT_DBZ), null);
+    assert.equal(dbzToRgbSmooth(NaN), null);
+    assert.equal(dbzToRgbSmooth(-50), null);
+    assert.equal(dbzToRgbSmooth(0), null);
+  });
+
+  test('returns the exact palette colour at every defined stop', () => {
+    for (const stop of PALETTE_STOPS) {
+      if (!Number.isFinite(stop.dbz)) continue;
+      const out = dbzToRgbSmooth(stop.dbz);
+      assert.ok(out);
+      assert.ok(Math.abs(out[0] - stop.rgb[0]) < 1e-6, `r at ${stop.dbz}`);
+      assert.ok(Math.abs(out[1] - stop.rgb[1]) < 1e-6, `g at ${stop.dbz}`);
+      assert.ok(Math.abs(out[2] - stop.rgb[2]) < 1e-6, `b at ${stop.dbz}`);
+    }
+  });
+
+  test('values between two stops produce strictly-between RGB channels', () => {
+    // 32.5 dBZ is halfway between stop 30 (dark green 0,144,0) and stop 35
+    // (yellow 255,255,0). Each channel must lerp accordingly.
+    const out = dbzToRgbSmooth(32.5);
+    assert.ok(out);
+    assert.ok(Math.abs(out[0] - 127.5) < 1e-6, `r=${out[0]}`);
+    assert.ok(Math.abs(out[1] - 199.5) < 1e-6, `g=${out[1]}`);
+    assert.equal(out[2], 0);
+  });
+
+  test('values above the top stop clamp to the top stop colour', () => {
+    const top = PALETTE_STOPS[PALETTE_STOPS.length - 1];
+    const out = dbzToRgbSmooth(top.dbz + 50);
+    assert.deepEqual(out, [...top.rgb]);
+  });
+
+  test('fade-in band defaults are sensible', () => {
+    assert.equal(RAIN_FADE_FLOOR_DBZ, 5);
+    assert.equal(RAIN_FADE_CEILING_DBZ, 10);
+  });
+});
+
 describe('encodeRainRateToRgba', () => {
   test('throws on dimension mismatch', () => {
     assert.throws(
@@ -164,14 +208,33 @@ describe('encodeRainRateToRgba', () => {
     for (let i = 0; i < out.length; i++) assert.equal(out[i], 0);
   });
 
-  test('positive rain rate → opaque palette colour', () => {
-    // 50 mm/h ≈ 50 dBZ → red palette stop (255, 0, 0)
+  test('heavy rain (above the fade-in band) renders opaque and near the red palette stop', () => {
+    // 50 mm/h ≈ 51 dBZ → between stop 50 (red) and stop 55 (dark red), so
+    // the smooth lerp lands close to red.
     const grid = new Float32Array([50]);
     const out = encodeRainRateToRgba(grid, 1, 1);
-    assert.equal(out[0], 255);
+    assert.ok(out[0] > 230 && out[0] <= 255, `r=${out[0]}`);
     assert.equal(out[1], 0);
     assert.equal(out[2], 0);
-    assert.equal(out[3], 255); // fully opaque
+    assert.equal(out[3], 255);
+  });
+
+  test('very light rain (below the fade ceiling) fades alpha rather than rendering fully opaque', () => {
+    // ~0.1 mm/h ≈ 7 dBZ — partway up the fade band 5..10 dBZ
+    const grid = new Float32Array([0.1]);
+    const out = encodeRainRateToRgba(grid, 1, 1);
+    assert.ok(out[3] > 0 && out[3] < 255, `expected partial alpha, got ${out[3]}`);
+  });
+
+  test('mid-band rain rate interpolates RGB between adjacent palette stops', () => {
+    // 5 mm/h ≈ 32 dBZ — between stop 30 (dark green 0,144,0) and stop 35
+    // (yellow 255,255,0). Smooth lerp must be in between on every channel,
+    // NOT a snap to either endpoint.
+    const grid = new Float32Array([5]);
+    const out = encodeRainRateToRgba(grid, 1, 1);
+    assert.ok(out[0] > 0 && out[0] < 255, `r=${out[0]} should be interpolated`);
+    assert.ok(out[1] > 144 && out[1] < 255, `g=${out[1]} should be interpolated`);
+    assert.equal(out[2], 0); // both stops have b=0
   });
 
   test('roundtrips back through decodeRgbaToRainRate (within palette quantisation)', () => {

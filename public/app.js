@@ -68,7 +68,7 @@ const INTERPOLATION_FACTOR = DEFAULT_INTERPOLATION_FACTOR;
 const PLAY_INTERVAL_MS = Math.max(60, Math.floor(FRAME_INTERVAL_MS / INTERPOLATION_FACTOR));
 
 const INITIAL_LAYERS = [
-  { id: RADAR_LAYER_ID, name: 'Historical radar', visible: false, opacity: 80 },
+  { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 90 },
   { id: TREND_LAYER_ID, name: 'Growth / decay', visible: false, opacity: 65 },
   { id: OMEGA_LAYER_ID, name: 'Convergence (850 hPa)', visible: false, opacity: 65 },
   { id: CAPE_LAYER_ID, name: 'CAPE (instability)', visible: false, opacity: 65 },
@@ -76,7 +76,7 @@ const INITIAL_LAYERS = [
   { id: PROBABILITY_LAYER_ID, name: 'Probability of rain (2 h)', visible: false, opacity: 70 },
   { id: CONFIDENCE_LAYER_ID, name: 'Forecast uncertainty', visible: false, opacity: 70 },
   { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: false, opacity: 90 },
-  { id: TOPOLOGY_LAYER_ID, name: 'Cloud topology', visible: true, opacity: 85 },
+  { id: TOPOLOGY_LAYER_ID, name: 'Cloud topology', visible: false, opacity: 85 },
 ];
 
 /** Cloud-topology display config — driven by the Topology display modal.

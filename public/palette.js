@@ -90,11 +90,54 @@ export function dbzToRgb(dbz) {
   return best.rgb;
 }
 
+const SORTED_RAIN_STOPS = PALETTE_STOPS
+  .filter((s) => Number.isFinite(s.dbz))
+  .sort((a, b) => a.dbz - b.dbz);
+
+/**
+ * Smooth-interpolated variant of dbzToRgb. Finds the two palette stops
+ * that bracket the input dBZ and linearly interpolates the RGB channels
+ * between them. Used by the radar render path to give a continuous
+ * heatmap look (no banded plateaus at palette boundaries) without
+ * abandoning the established RainViewer palette.
+ *
+ * Below the lowest rain stop → null (caller treats as transparent).
+ * At or above the highest stop → the highest stop's RGB unchanged.
+ */
+export function dbzToRgbSmooth(dbz) {
+  if (!Number.isFinite(dbz) || dbz < SORTED_RAIN_STOPS[0].dbz) return null;
+  const last = SORTED_RAIN_STOPS[SORTED_RAIN_STOPS.length - 1];
+  if (dbz >= last.dbz) return [last.rgb[0], last.rgb[1], last.rgb[2]];
+  for (let i = 0; i < SORTED_RAIN_STOPS.length - 1; i++) {
+    const lo = SORTED_RAIN_STOPS[i];
+    const hi = SORTED_RAIN_STOPS[i + 1];
+    if (dbz >= lo.dbz && dbz <= hi.dbz) {
+      const t = (dbz - lo.dbz) / (hi.dbz - lo.dbz);
+      return [
+        lo.rgb[0] + (hi.rgb[0] - lo.rgb[0]) * t,
+        lo.rgb[1] + (hi.rgb[1] - lo.rgb[1]) * t,
+        lo.rgb[2] + (hi.rgb[2] - lo.rgb[2]) * t,
+      ];
+    }
+  }
+  return null;
+}
+
+/** Lowest dBZ stop in the rain ramp — below this, alpha fades to zero
+ *  rather than snapping, so cloud edges blend into the basemap instead
+ *  of producing a hard rim of opaque cyan around very light rain. */
+export const RAIN_FADE_FLOOR_DBZ = SORTED_RAIN_STOPS[0].dbz;
+/** dBZ at which the rain alpha reaches full opacity (top of the fade-in
+ *  ramp). Tuned to coincide with the second palette stop. */
+export const RAIN_FADE_CEILING_DBZ = SORTED_RAIN_STOPS[1]?.dbz ?? (RAIN_FADE_FLOOR_DBZ + 5);
+
 /**
  * Encode a rain-rate grid (Float32Array, mm/h) back into an RGBA pixel
- * buffer for canvas rendering. Inverse of decodeRgbaToRainRate. Zero
- * mm/h → transparent black. Anything else → snapped to the nearest
- * palette stop (so output looks like RainViewer's own coloured tiles).
+ * buffer for canvas rendering. Uses smooth palette interpolation
+ * (`dbzToRgbSmooth`) so adjacent rain bands blend into a continuous
+ * heatmap instead of banding at palette boundaries — and fades the
+ * alpha in over the first dBZ band so very light rain reads as a soft
+ * halo rather than a hard rim of opaque cyan.
  */
 export function encodeRainRateToRgba(grid, width, height) {
   const expected = width * height;
@@ -104,18 +147,26 @@ export function encodeRainRateToRgba(grid, width, height) {
     );
   }
   const out = new Uint8ClampedArray(width * height * 4);
+  const fadeFloor = RAIN_FADE_FLOOR_DBZ;
+  const fadeCeil = RAIN_FADE_CEILING_DBZ;
+  const fadeSpan = Math.max(1e-6, fadeCeil - fadeFloor);
   for (let p = 0, i = 0; p < grid.length; p++, i += 4) {
     const mm = grid[p];
-    if (!(mm > 0)) {
-      // RGBA already zero-initialised → transparent black for no-rain
-      continue;
-    }
+    if (!(mm > 0)) continue;
     const dbz = rainRateToDbz(mm);
-    const [r, g, b] = dbzToRgb(dbz);
-    out[i] = r;
-    out[i + 1] = g;
-    out[i + 2] = b;
-    out[i + 3] = 255;
+    const rgb = dbzToRgbSmooth(dbz);
+    if (!rgb) continue;
+    // Fade-in alpha across the first band so cloud edges feather softly
+    // into the basemap instead of producing a hard cyan rim.
+    let alpha = 255;
+    if (dbz < fadeCeil) {
+      const t = Math.max(0, (dbz - fadeFloor) / fadeSpan);
+      alpha = Math.round(t * 255);
+    }
+    out[i] = rgb[0];
+    out[i + 1] = rgb[1];
+    out[i + 2] = rgb[2];
+    out[i + 3] = alpha;
   }
   return out;
 }
