@@ -1,6 +1,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_TREND_WINDOW, computeTrend } from '../public/trend.js';
+import {
+  DEFAULT_TREND_WINDOW,
+  DEFAULT_TREND_COLORMAP_SCALE,
+  DEFAULT_TREND_MAX_ALPHA,
+  computeTrend,
+  encodeTrendToRgba,
+} from '../public/trend.js';
 
 function frame(grid, w, h, time = 0) {
   return { time, grid: Float32Array.from(grid), width: w, height: h };
@@ -109,5 +115,82 @@ describe('computeTrend', () => {
     assert.ok(out.grid[0] > 0, 'pixel 0 should be growing');
     assert.ok(out.grid[1] < 0, 'pixel 1 should be decaying');
     assert.ok(Math.abs(out.grid[2]) < 1e-9, 'pixel 2 should be stable');
+  });
+});
+
+describe('encodeTrendToRgba', () => {
+  test('exports sensible colormap defaults', () => {
+    assert.equal(DEFAULT_TREND_COLORMAP_SCALE, 1.0);
+    assert.equal(DEFAULT_TREND_MAX_ALPHA, 200);
+  });
+
+  test('zero trend → fully transparent everywhere', () => {
+    const grid = new Float32Array([0, 0, 0, 0]);
+    const out = encodeTrendToRgba(grid, 2, 2);
+    for (let i = 0; i < out.length; i++) assert.equal(out[i], 0);
+  });
+
+  test('positive trend renders red with alpha proportional to magnitude', () => {
+    const grid = new Float32Array([0.5]);
+    const out = encodeTrendToRgba(grid, 1, 1);
+    assert.equal(out[0], 240);
+    assert.equal(out[1], 80);
+    assert.equal(out[2], 60);
+    assert.equal(out[3], 100); // 0.5 * 200
+  });
+
+  test('negative trend renders blue with alpha proportional to |magnitude|', () => {
+    const grid = new Float32Array([-0.5]);
+    const out = encodeTrendToRgba(grid, 1, 1);
+    assert.equal(out[0], 60);
+    assert.equal(out[1], 130);
+    assert.equal(out[2], 240);
+    assert.equal(out[3], 100); // |-0.5| * 200
+  });
+
+  test('values beyond ±scale clamp to full saturation', () => {
+    const grid = new Float32Array([2, -3]);
+    const out = encodeTrendToRgba(grid, 2, 1);
+    // Both should be at maxAlpha (200)
+    assert.equal(out[3], 200);
+    assert.equal(out[7], 200);
+  });
+
+  test('non-finite values render as transparent', () => {
+    const grid = new Float32Array([NaN, Infinity]);
+    const out = encodeTrendToRgba(grid, 2, 1);
+    assert.equal(out[3], 0);
+    assert.equal(out[7], 0);
+  });
+
+  test('custom scale and maxAlpha are honoured', () => {
+    const grid = new Float32Array([2]);
+    // scale = 4 → t = 0.5 → alpha = 0.5 * 100 = 50
+    const out = encodeTrendToRgba(grid, 1, 1, { scale: 4, maxAlpha: 100 });
+    assert.equal(out[3], 50);
+  });
+
+  test('near-zero trend below epsilon is treated as zero', () => {
+    const grid = new Float32Array([0.005]); // |t| < 0.01 epsilon
+    const out = encodeTrendToRgba(grid, 1, 1);
+    assert.equal(out[3], 0);
+  });
+
+  test('throws on non-positive scale', () => {
+    const grid = new Float32Array(4);
+    assert.throws(() => encodeTrendToRgba(grid, 2, 2, { scale: 0 }), /scale/);
+    assert.throws(() => encodeTrendToRgba(grid, 2, 2, { scale: -1 }), /scale/);
+  });
+
+  test('throws on dimension mismatch', () => {
+    const grid = new Float32Array(3);
+    assert.throws(() => encodeTrendToRgba(grid, 2, 2), /does not match|grid length/);
+  });
+
+  test('returns Uint8ClampedArray of width*height*4 entries', () => {
+    const grid = new Float32Array(9);
+    const out = encodeTrendToRgba(grid, 3, 3);
+    assert.ok(out instanceof Uint8ClampedArray);
+    assert.equal(out.length, 36);
   });
 });

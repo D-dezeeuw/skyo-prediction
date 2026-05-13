@@ -14,6 +14,7 @@
 
 import { tileBounds } from './vectors.js';
 import { encodeRainRateToRgba } from './palette.js';
+import { encodeTrendToRgba } from './trend.js';
 
 const LEAFLET_VERSION = '1.9.4';
 const LEAFLET_CSS = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`;
@@ -104,6 +105,20 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   let radarOpacity = 0.8;
   let currentFrameKey = null;
 
+  // Trend overlay (diverging-colour heatmap). Same canvas-render-to-
+  // data-URL approach as the radar; lives between radar and vectors
+  // in z-order so the rain still reads through.
+  const trendCanvas = document.createElement('canvas');
+  trendCanvas.width = tileSize;
+  trendCanvas.height = tileSize;
+  const trendOverlay = L.imageOverlay(transparentPng, latLngBounds, {
+    opacity: 0,
+    interactive: false,
+  }).addTo(map);
+  let trendVisible = false;
+  let trendOpacity = 0.65;
+  let trendKey = null;
+
   // Vectors overlay (SVG arrows).
   const vectorsSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   vectorsSvg.setAttribute('viewBox', `0 0 ${tileSize} ${tileSize}`);
@@ -118,6 +133,9 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
 
   const applyRadarOpacity = () => {
     radarOverlay.setOpacity(radarVisible ? radarOpacity : 0);
+  };
+  const applyTrendOpacity = () => {
+    trendOverlay.setOpacity(trendVisible ? trendOpacity : 0);
   };
   const applyVectorsOpacity = () => {
     vectorsOverlay.setOpacity(vectorsVisible ? vectorsOpacity : 0);
@@ -159,6 +177,36 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     setVisible(v) {
       radarVisible = Boolean(v);
       applyRadarOpacity();
+    },
+    /**
+     * Render a Float32 trend grid (mm/h per frame-interval) into the
+     * trend overlay. Same dedupe-by-key pattern as renderFrame.
+     */
+    renderTrend(grid, width, height, key = null) {
+      if (!grid) return;
+      if (key !== null && key === trendKey) {
+        applyTrendOpacity();
+        return;
+      }
+      if (width !== trendCanvas.width || height !== trendCanvas.height) {
+        trendCanvas.width = width;
+        trendCanvas.height = height;
+      }
+      const ctx = trendCanvas.getContext('2d');
+      const imageData = ctx.createImageData(width, height);
+      imageData.data.set(encodeTrendToRgba(grid, width, height));
+      ctx.putImageData(imageData, 0, 0);
+      trendOverlay.setUrl(trendCanvas.toDataURL('image/png'));
+      trendKey = key;
+      applyTrendOpacity();
+    },
+    setTrendOpacity(v) {
+      trendOpacity = Math.max(0, Math.min(1, v));
+      applyTrendOpacity();
+    },
+    setTrendVisible(v) {
+      trendVisible = Boolean(v);
+      applyTrendOpacity();
     },
     setVectors(arrows) {
       while (vectorsSvg.firstChild) vectorsSvg.removeChild(vectorsSvg.firstChild);

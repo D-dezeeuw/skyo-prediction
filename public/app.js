@@ -19,6 +19,7 @@ import { computeTrend, DEFAULT_TREND_WINDOW } from './trend.js';
 
 const RADAR_LAYER_ID = 'radar-history';
 const VECTORS_LAYER_ID = 'motion-vectors';
+const TREND_LAYER_ID = 'trend';
 const HISTORY_FRAME_COUNT = 12;
 // 512-px tile (RainViewer's higher-detail variant — 3.4× the PNG file
 // size of 256, so real detail not just upscaling) gives us a 512×512
@@ -38,6 +39,7 @@ const PLAY_INTERVAL_MS = Math.max(60, Math.floor(FRAME_INTERVAL_MS / INTERPOLATI
 
 const INITIAL_LAYERS = [
   { id: RADAR_LAYER_ID, name: 'Historical radar', visible: true, opacity: 80 },
+  { id: TREND_LAYER_ID, name: 'Growth / decay', visible: false, opacity: 65 },
   { id: VECTORS_LAYER_ID, name: 'Motion vectors', visible: true, opacity: 90 },
 ];
 
@@ -256,6 +258,9 @@ function applyLayerToMap(layer) {
   } else if (layer.id === VECTORS_LAYER_ID) {
     mapHandle.setVectorsVisible(layer.visible);
     mapHandle.setVectorsOpacity(opacity);
+  } else if (layer.id === TREND_LAYER_ID) {
+    mapHandle.setTrendVisible(layer.visible);
+    mapHandle.setTrendOpacity(opacity);
   }
 }
 
@@ -339,6 +344,17 @@ watch(['layers'], () => {
   /* node:coverage disable */
   if (!mapHandle) return;
   for (const layer of appState.layers ?? []) applyLayerToMap(layer);
+  /* node:coverage enable */
+});
+
+watch(['trend.data'], () => {
+  /* node:coverage disable */
+  if (!mapHandle) return;
+  const t = appState.trend?.data;
+  if (!t) return;
+  // Use window+timestamp as the dedupe key so we re-render exactly when
+  // the trend recomputes, not on every layer toggle.
+  mapHandle.renderTrend(t.grid, t.width, t.height, `${t.window}:${t.computeMs}`);
   /* node:coverage enable */
 });
 
