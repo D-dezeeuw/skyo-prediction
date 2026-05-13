@@ -4,8 +4,11 @@ import {
   DEFAULT_BLOCK_SIZE,
   DEFAULT_SEARCH_RADIUS,
   DEFAULT_SMOOTHING_WINDOW,
+  DEFAULT_FLOW_INTENSITY_THRESHOLD,
+  DEFAULT_FLOW_CONFIDENCE_THRESHOLD,
   computeFlow,
   computeFlowPairs,
+  medianFilter,
   smoothFlows,
   flowFromHistory,
 } from '../public/flow.js';
@@ -48,6 +51,8 @@ describe('exports', () => {
     assert.equal(DEFAULT_BLOCK_SIZE, 16);
     assert.equal(DEFAULT_SEARCH_RADIUS, 8);
     assert.equal(DEFAULT_SMOOTHING_WINDOW, 3);
+    assert.equal(DEFAULT_FLOW_INTENSITY_THRESHOLD, 0.05);
+    assert.equal(DEFAULT_FLOW_CONFIDENCE_THRESHOLD, 0.5);
   });
 });
 
@@ -254,6 +259,134 @@ describe('computeFlowPairs', () => {
   });
 });
 
+describe('computeFlow — intensity gate', () => {
+  test('blocks below intensityThreshold in BOTH frames decode to zero flow', () => {
+    const w = 64, h = 64;
+    const prev = new Float32Array(w * h); // flat zero
+    const curr = new Float32Array(w * h); // flat zero
+    const flow = computeFlow(prev, curr, w, h, { intensityThreshold: 0.05 });
+    for (let i = 0; i < flow.data.length; i++) {
+      assert.equal(flow.data[i], 0);
+    }
+  });
+
+  test('blocks with signal in ONE of the frames still compute flow', () => {
+    const w = 64, h = 64;
+    const prev = texturedGrid(w, h);
+    const curr = shifted(prev, w, h, 2, 0);
+    const flow = computeFlow(prev, curr, w, h, { intensityThreshold: 0.05 });
+    // Interior block should detect the shift
+    const i = (2 * flow.width + 2) * 2;
+    assert.equal(flow.data[i], 2);
+  });
+
+  test('intensityThreshold = 0 (default) does not gate — produces same result as no option', () => {
+    const w = 64, h = 64;
+    const prev = texturedGrid(w, h);
+    const curr = shifted(prev, w, h, 2, 0);
+    const a = computeFlow(prev, curr, w, h);
+    const b = computeFlow(prev, curr, w, h, { intensityThreshold: 0 });
+    for (let i = 0; i < a.data.length; i++) assert.equal(a.data[i], b.data[i]);
+  });
+});
+
+describe('computeFlow — confidence gate', () => {
+  test('high-confidence match (perfect translation) passes the gate', () => {
+    const w = 64, h = 64;
+    const prev = texturedGrid(w, h);
+    const curr = shifted(prev, w, h, 2, 0);
+    const flow = computeFlow(prev, curr, w, h, { confidenceThreshold: 0.5 });
+    const i = (2 * flow.width + 2) * 2;
+    assert.equal(flow.data[i], 2);
+  });
+
+  test('low-confidence match (uncorrelated frames) is rejected → zero flow', () => {
+    const w = 64, h = 64;
+    const prev = texturedGrid(w, h);
+    // Build a curr that has zero correlation with prev (different pattern)
+    const curr = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        curr[y * w + x] = Math.sin(x * 13.7) * Math.cos(y * 11.3);
+      }
+    }
+    const flow = computeFlow(prev, curr, w, h, { confidenceThreshold: 0.1 });
+    // At least some interior blocks should be zeroed
+    let zeroed = 0;
+    for (let i = 0; i < flow.data.length; i += 2) {
+      if (flow.data[i] === 0 && flow.data[i + 1] === 0) zeroed++;
+    }
+    assert.ok(zeroed > 0, `expected at least one rejected block, got ${zeroed}`);
+  });
+});
+
+describe('medianFilter', () => {
+  const mkField = (w, h) => ({
+    width: w, height: h, blockSize: 16,
+    data: new Float32Array(w * h * 2),
+  });
+
+  test('returns the field unchanged when given empty/null input', () => {
+    assert.equal(medianFilter(null), null);
+    assert.equal(medianFilter(undefined), undefined);
+    assert.equal(medianFilter({}).data, undefined);
+  });
+
+  test('uniform field is unchanged', () => {
+    const f = mkField(3, 3);
+    for (let i = 0; i < f.data.length; i += 2) {
+      f.data[i] = 1; f.data[i + 1] = 0;
+    }
+    const out = medianFilter(f);
+    for (let i = 0; i < out.data.length; i += 2) {
+      assert.equal(out.data[i], 1);
+      assert.equal(out.data[i + 1], 0);
+    }
+  });
+
+  test('isolated outlier in the centre snaps to neighbour median', () => {
+    const f = mkField(3, 3);
+    // All neighbours have (1, 0). Centre block has (99, -99).
+    for (let i = 0; i < f.data.length; i += 2) { f.data[i] = 1; f.data[i + 1] = 0; }
+    const centre = (1 * 3 + 1) * 2;
+    f.data[centre] = 99; f.data[centre + 1] = -99;
+    const out = medianFilter(f);
+    // Centre's 3×3 neighbourhood: 8 values of (1, 0) + the centre (99, -99).
+    // Median of [1,1,1,1,1,1,1,1,99] = 1 ; median of [-99,0,0,0,0,0,0,0,0] = 0.
+    assert.equal(out.data[centre], 1);
+    assert.equal(out.data[centre + 1], 0);
+  });
+
+  test('preserves coherent edges (translation) even when noisy outliers exist', () => {
+    const f = mkField(5, 5);
+    // Fill with uniform (2, 0)
+    for (let i = 0; i < f.data.length; i += 2) { f.data[i] = 2; f.data[i + 1] = 0; }
+    // Inject a single outlier at (2,2)
+    const o = (2 * 5 + 2) * 2;
+    f.data[o] = -7; f.data[o + 1] = 5;
+    const out = medianFilter(f);
+    // Coherent neighbours dominate → outlier should be flattened back to (2, 0)
+    assert.equal(out.data[o], 2);
+    assert.equal(out.data[o + 1], 0);
+  });
+
+  test('returns a new array (no in-place mutation)', () => {
+    const f = mkField(2, 2);
+    for (let i = 0; i < f.data.length; i += 2) { f.data[i] = 1; f.data[i + 1] = 2; }
+    const out = medianFilter(f);
+    assert.notEqual(out.data, f.data);
+  });
+
+  test('preserves width/height/blockSize metadata', () => {
+    const f = mkField(4, 3);
+    f.blockSize = 32;
+    const out = medianFilter(f);
+    assert.equal(out.width, 4);
+    assert.equal(out.height, 3);
+    assert.equal(out.blockSize, 32);
+  });
+});
+
 describe('flowFromHistory', () => {
   test('returns null for fewer than 2 entries', () => {
     assert.equal(flowFromHistory([]), null);
@@ -301,8 +434,44 @@ describe('flowFromHistory', () => {
       { grid: base, width: w, height: h },
       { grid: shifted(base, w, h, 2, 0), width: w, height: h },
     ];
-    const out = flowFromHistory(history, { window: 0 });
+    const out = flowFromHistory(history, { window: 0, medianFilterEach: false });
     const i = (2 * out.width + 2) * 2;
     assert.equal(out.data[i], 2);
+  });
+
+  test('medianFilterEach=true (default) smooths an injected outlier', () => {
+    const w = 64, h = 64;
+    const base = texturedGrid(w, h);
+    // Two-frame history; uniform translation
+    const history = [
+      { grid: base, width: w, height: h },
+      { grid: shifted(base, w, h, 2, 0), width: w, height: h },
+    ];
+    const out = flowFromHistory(history);
+    // With median filter active, every interior block should resolve to (2, 0)
+    let agreeing = 0;
+    for (let by = 1; by < out.height - 1; by++) {
+      for (let bx = 1; bx < out.width - 1; bx++) {
+        const i = (by * out.width + bx) * 2;
+        if (out.data[i] === 2 && out.data[i + 1] === 0) agreeing++;
+      }
+    }
+    assert.ok(agreeing > 0);
+  });
+
+  test('medianFilterEach=false yields identical results to no filter (regression check)', () => {
+    const w = 64, h = 64;
+    const base = texturedGrid(w, h);
+    const history = [
+      { grid: base, width: w, height: h },
+      { grid: shifted(base, w, h, 1, 0), width: w, height: h },
+    ];
+    const filtered = flowFromHistory(history, { medianFilterEach: true });
+    const unfiltered = flowFromHistory(history, { medianFilterEach: false });
+    // On a clean translation with no outliers, both modes should agree on
+    // interior blocks (the median of identical neighbours is the same value)
+    const i = (2 * filtered.width + 2) * 2;
+    assert.equal(filtered.data[i], unfiltered.data[i]);
+    assert.equal(filtered.data[i + 1], unfiltered.data[i + 1]);
   });
 });
