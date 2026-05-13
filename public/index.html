@@ -120,6 +120,10 @@
         <span class="pipe-label">Forecast</span>
         <span class="pipe-value">{{forecastStatus}}</span>
       </div>
+      <div class="pipe-stage">
+        <span class="pipe-label">Confidence</span>
+        <span class="pipe-value">{{confidenceStatus}}</span>
+      </div>
     </section>
 
     <p class="error" data-if="radarHistory.error">Failed to load radar: {{radarHistory.error.message}}</p>

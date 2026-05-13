@@ -15,6 +15,7 @@
 import { tileBounds } from './vectors.js';
 import { encodeRainRateToRgba } from './palette.js';
 import { encodeTrendToRgba } from './trend.js';
+import { encodeConfidenceToRgba } from './confidence.js';
 
 const LEAFLET_VERSION = '1.9.4';
 const LEAFLET_CSS = `https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css`;
@@ -119,6 +120,19 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   let trendOpacity = 0.65;
   let trendKey = null;
 
+  // Confidence overlay (yellow→red heatmap of two-member forecast
+  // disagreement). Stacks above trend, below vectors.
+  const confidenceCanvas = document.createElement('canvas');
+  confidenceCanvas.width = tileSize;
+  confidenceCanvas.height = tileSize;
+  const confidenceOverlay = L.imageOverlay(transparentPng, latLngBounds, {
+    opacity: 0,
+    interactive: false,
+  }).addTo(map);
+  let confidenceVisible = false;
+  let confidenceOpacity = 0.7;
+  let confidenceKey = null;
+
   // Vectors overlay (SVG arrows).
   const vectorsSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   vectorsSvg.setAttribute('viewBox', `0 0 ${tileSize} ${tileSize}`);
@@ -136,6 +150,9 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   };
   const applyTrendOpacity = () => {
     trendOverlay.setOpacity(trendVisible ? trendOpacity : 0);
+  };
+  const applyConfidenceOpacity = () => {
+    confidenceOverlay.setOpacity(confidenceVisible ? confidenceOpacity : 0);
   };
   const applyVectorsOpacity = () => {
     vectorsOverlay.setOpacity(vectorsVisible ? vectorsOpacity : 0);
@@ -207,6 +224,33 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     setTrendVisible(v) {
       trendVisible = Boolean(v);
       applyTrendOpacity();
+    },
+    /** Render the forecast-disagreement field. Same key dedupe pattern. */
+    renderConfidence(grid, width, height, key = null) {
+      if (!grid) return;
+      if (key !== null && key === confidenceKey) {
+        applyConfidenceOpacity();
+        return;
+      }
+      if (width !== confidenceCanvas.width || height !== confidenceCanvas.height) {
+        confidenceCanvas.width = width;
+        confidenceCanvas.height = height;
+      }
+      const ctx = confidenceCanvas.getContext('2d');
+      const imageData = ctx.createImageData(width, height);
+      imageData.data.set(encodeConfidenceToRgba(grid, width, height));
+      ctx.putImageData(imageData, 0, 0);
+      confidenceOverlay.setUrl(confidenceCanvas.toDataURL('image/png'));
+      confidenceKey = key;
+      applyConfidenceOpacity();
+    },
+    setConfidenceOpacity(v) {
+      confidenceOpacity = Math.max(0, Math.min(1, v));
+      applyConfidenceOpacity();
+    },
+    setConfidenceVisible(v) {
+      confidenceVisible = Boolean(v);
+      applyConfidenceOpacity();
     },
     setVectors(arrows) {
       while (vectorsSvg.firstChild) vectorsSvg.removeChild(vectorsSvg.firstChild);
