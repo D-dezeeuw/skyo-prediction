@@ -122,34 +122,6 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   let radarOpacity = 0.8;
   let currentFrameKey = null;
 
-  // RainViewer source tile overlay — raw tiles straight from their CDN,
-  // no decode, no smoothing, no upsampling. ONE persistent tileLayer
-  // for the lifetime of the map; setUrl swaps the URL template per
-  // frame. fadeAnimation:false avoids Leaflet's cross-fade between
-  // the old + new tile sets (which produced visible duplicate cells
-  // offset by 10-min motion during the transition). updateWhenIdle:
-  // false so each setUrl triggers an immediate reload, not deferred.
-  // A transparent 1×1 PNG placeholder template means the layer can be
-  // created up front and we just swap URLs.
-  const transparentTileTemplate = (() => {
-    const c = document.createElement('canvas');
-    c.width = c.height = 1;
-    return c.toDataURL('image/png');
-  })();
-  const sourceTileLayer = L.tileLayer(transparentTileTemplate, {
-    attribution: 'Radar &copy; <a href="https://www.rainviewer.com" target="_blank" rel="noopener">RainViewer</a>',
-    opacity: 0,
-    bounds: latLngBounds,
-    tileSize: 256,
-    crossOrigin: true,
-    fadeAnimation: false,
-    keepBuffer: 0,
-    updateWhenIdle: false,
-  }).addTo(map);
-  let sourceVisible = false;
-  let sourceOpacity = 0.85;
-  let sourceCurrentUrl = null;
-
   // Trend overlay (diverging-colour heatmap). Same canvas-render-to-
   // data-URL approach as the radar; lives between radar and vectors
   // in z-order so the rain still reads through.
@@ -263,18 +235,6 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
   };
   const applyVectorsOpacity = () => {
     vectorsOverlay.setOpacity(vectorsVisible ? vectorsOpacity : 0);
-  };
-  const applySourceOpacity = () => {
-    // When URL is the transparent placeholder, force opacity 0 too —
-    // so we don't render a stale frame at low alpha behind the canvas.
-    const hasRealTiles = sourceCurrentUrl && sourceCurrentUrl !== transparentTileTemplate;
-    sourceTileLayer.setOpacity(sourceVisible && hasRealTiles ? sourceOpacity : 0);
-  };
-  const swapSourceTileUrl = (urlTemplate) => {
-    const next = urlTemplate || transparentTileTemplate;
-    if (next === sourceCurrentUrl) return;
-    sourceTileLayer.setUrl(next, /* noRedraw */ false);
-    sourceCurrentUrl = next;
   };
 
   return {
@@ -503,23 +463,6 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     setProbabilityVisible(v) {
       probabilityVisible = Boolean(v);
       applyProbabilityOpacity();
-    },
-    /** Point the source-tile layer at a new URL template (or null to
-     *  clear it — used for forecast slots RainViewer doesn't publish).
-     *  Same URL twice in a row is a no-op. Uses setUrl + fadeAnimation:
-     *  false on the persistent tileLayer instead of remove/add, so old
-     *  + new tiles never overlap during a swap. */
-    setSourceFrame(urlTemplate) {
-      swapSourceTileUrl(urlTemplate);
-      applySourceOpacity();
-    },
-    setSourceOpacity(v) {
-      sourceOpacity = Math.max(0, Math.min(1, v));
-      applySourceOpacity();
-    },
-    setSourceVisible(v) {
-      sourceVisible = Boolean(v);
-      applySourceOpacity();
     },
     setVectors(arrows) {
       while (vectorsSvg.firstChild) vectorsSvg.removeChild(vectorsSvg.firstChild);
