@@ -89,6 +89,15 @@ h2 {
   opacity: 0.5;
 }
 
+/* Belt-and-braces against Leaflet's tile fade-in. The map-wide
+ * fadeAnimation:false option handles most of it, but builds that ship
+ * an inline `transition: opacity ...` style on tile <img> elements can
+ * still slip a fade through. Force every tile to appear instantly. */
+#map .leaflet-tile,
+#map .leaflet-tile-loaded {
+  transition: none !important;
+}
+
 .layers-panel {
   background: var(--panel);
   border: 1px solid var(--border);
