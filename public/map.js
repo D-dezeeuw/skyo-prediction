@@ -84,6 +84,12 @@ export async function mountMap(el, { view = DEFAULT_VIEW, frameOptions } = {}) {
     maxZoom: tileZ + 2,
     maxBounds: latLngBounds.pad(0.05),
     maxBoundsViscosity: 1.0,
+    // Map-wide kill-switch for tile fade animation. Per-tileLayer
+    // fadeAnimation:false isn't enough — Leaflet still applies CSS
+    // opacity transitions to individual tile <img> elements during
+    // setUrl swaps, which produces the visible "two frames at offset
+    // positions" ghosting the user reported on the Precipitation layer.
+    fadeAnimation: false,
   });
   // fitBounds picks the tightest zoom that still shows the whole tile;
   // bump it by 1 so the default view sits closer in (radar detail more
